@@ -102,14 +102,26 @@ class KataaSession(
     private fun submit(text: String, voice: Boolean) {
         _state.value = KataaState.Thinking(text)
         runOnCore {
+            try {
+                handleOnCore(text, voice)
+            } catch (t: Throwable) {
+                // Never leave the orb stuck on "thinking".
+                _state.value = KataaState.Failed(SpeechError.OTHER)
+            }
+        }
+    }
+
+    private fun handleOnCore(text: String, voice: Boolean) {
+        run {
             val c = core()
             val ctx = context().let { if (voice) it.copy(source = app.kataa.core.model.Source.VOICE) else it.copy(source = app.kataa.core.model.Source.TEXT) }
             val previous = awaiting
             val reply = if (previous != null) c.assistant.followUp(previous, text, ctx) else c.assistant.handle(text, ctx)
             awaiting = reply.takeIf { it is Reply.NeedsTime || it is Reply.NeedsPlace || it is Reply.NeedsLocation }
             _state.value = KataaState.Done(text, reply)
-            // Embedding and categories happen after the answer is on screen.
-            c.processPending()
+            // Embedding and categories happen after the answer is on screen; a failure there must not
+            // turn a saved memory into an error.
+            runCatching { c.processPending() }
         }
     }
 

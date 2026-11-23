@@ -16,17 +16,51 @@ import java.util.concurrent.Executors
  * Everything touching the core runs on [worker] (one thread, one connection), so the UI never blocks.
  */
 class CoreProvider(private val context: Context) {
-    val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "kataa-core").apply { priority = Thread.NORM_PRIORITY - 1 } }
+    val worker = Executors.newSingleThreadExecutor { r ->
+        Thread({
+            // Keep the single core thread alive whatever one task throws.
+            try { r.run() } catch (t: Throwable) { android.util.Log.e("Kataa", "core task failed", t) }
+        }, "kataa-core").apply { priority = Thread.NORM_PRIORITY - 1 }
+    }
+
+    /** True when the old database could not be opened and a fresh one was started (offer "Restore backup"). */
+    @Volatile var startedFresh = false
+        private set
 
     val core: KataaCore by lazy {
+        val driver = openDatabase()
+        val vocab = context.assets.open("$MODEL/vocab.txt").bufferedReader().use { it.readText() }
+        KataaCore(driver, Models.bgeSmall(mapModel(), vocab, threads = inferenceThreads()))
+    }
+
+    /**
+     * Opens the encrypted database. If it can't be opened (the Keystore key was wiped, e.g. after a
+     * factory-reset restore, or the file is damaged) the old file is kept aside, not deleted, and a fresh
+     * database starts so the app still works; the user can then restore an encrypted backup.
+     */
+    private fun openDatabase(): NativeSqlDriver {
+        val file = context.getDatabasePath("kataa.db").also { it.parentFile?.mkdirs() }
+        return try {
+            open(file)
+        } catch (e: Exception) {
+            if (!file.exists()) throw e
+            val stamp = System.currentTimeMillis()
+            for (suffix in listOf("", "-wal", "-shm")) {
+                java.io.File(file.path + suffix).takeIf { it.exists() }?.renameTo(java.io.File("${file.path}.unreadable-$stamp$suffix"))
+            }
+            DatabaseKey.reset(context)
+            startedFresh = true
+            open(file)
+        }
+    }
+
+    private fun open(file: java.io.File): NativeSqlDriver {
         val key = DatabaseKey.get(context)
-        val driver = try {
-            NativeSqlDriver(context.getDatabasePath("kataa.db").also { it.parentFile?.mkdirs() }.path, key)
+        try {
+            return NativeSqlDriver(file.path, key)
         } finally {
             key.fill(0)
         }
-        val vocab = context.assets.open("$MODEL/vocab.txt").bufferedReader().use { it.readText() }
-        KataaCore(driver, Models.bgeSmall(mapModel(), vocab, threads = inferenceThreads()))
     }
 
     /**

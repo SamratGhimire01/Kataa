@@ -10,6 +10,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import app.kataa.data.BackupFiles
 import app.kataa.triggers.Triggers
 import android.content.pm.PackageManager
 import android.graphics.Typeface
@@ -51,6 +52,7 @@ class DevConsoleActivity : Activity() {
         val talk = Button(this).apply { text = "Talk"; setOnClickListener { talk() } }
         val perms = Button(this).apply { text = "Allow reminders (notifications, location, alarms, Bluetooth)"; setOnClickListener { askReminderPermissions() } }
         val car = Button(this).apply { text = "Choose car Bluetooth"; setOnClickListener { chooseCar() } }
+        val backup = Button(this).apply { text = "Back up / restore"; setOnClickListener { backupMenu() } }
         val input = EditText(this).apply {
             hint = "Or type, e.g. my keys are in the drawer"
             imeOptions = EditorInfo.IME_ACTION_SEND
@@ -60,7 +62,7 @@ class DevConsoleActivity : Activity() {
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             fitsSystemWindows = true
-            addView(talk); addView(perms); addView(car); addView(input); addView(status)
+            addView(talk); addView(perms); addView(car); addView(backup); addView(input); addView(status)
             addView(ScrollView(context).apply { addView(log) }, LinearLayout.LayoutParams(-1, 0, 1f))
         })
         scope.launch { session.state.collect(::render) }
@@ -120,6 +122,43 @@ class DevConsoleActivity : Activity() {
             .show()
     }
 
+    private var pendingPass: CharArray? = null
+
+    private fun backupMenu() {
+        AlertDialog.Builder(this).setItems(arrayOf("Save encrypted backup", "Restore from backup")) { _, which ->
+            askPassphrase { pass ->
+                pendingPass = pass
+                val pick = if (which == 0) Intent(Intent.ACTION_CREATE_DOCUMENT).setType(BackupFiles.MIME)
+                    .putExtra(Intent.EXTRA_TITLE, BackupFiles.suggestedName(System.currentTimeMillis()))
+                else Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
+                startActivityForResult(pick.addCategory(Intent.CATEGORY_OPENABLE), if (which == 0) REQ_EXPORT else REQ_IMPORT)
+            }
+        }.show()
+    }
+
+    private fun askPassphrase(then: (CharArray) -> Unit) {
+        val field = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; hint = "Passphrase (6+ characters)" }
+        AlertDialog.Builder(this).setTitle("Backup passphrase").setView(field)
+            .setPositiveButton("OK") { _, _ -> then(field.text.toString().toCharArray()) }.show()
+    }
+
+    @Deprecated("Activity result API is overkill for the temporary console")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        val uri = data?.data ?: return
+        val pass = pendingPass ?: return
+        pendingPass = null
+        val app = application as KataaApplication
+        app.cores.worker.execute {
+            val msg = runCatching {
+                if (requestCode == REQ_EXPORT) { BackupFiles.export(this, app.cores.core, uri, pass); "Backup saved." }
+                else BackupFiles.import(this, app.cores.core, uri, pass).let { "Restored ${it.memoriesAdded} memories, ${it.remindersAdded} reminders." }
+            }.getOrElse { "Backup failed: ${it.message}" }
+            pass.fill(' ')
+            runOnUiThread { log.append("\n$msg\n") }
+            if (requestCode == REQ_IMPORT) runCatching { Triggers.refreshAll(this) }
+        }
+    }
+
     private fun render(s: KataaState) {
         status.text = when (s) {
             KataaState.Idle -> "Ready"
@@ -144,5 +183,7 @@ class DevConsoleActivity : Activity() {
     private companion object {
         const val REQ_MIC = 1
         const val REQ_REMINDERS = 2
+        const val REQ_EXPORT = 3
+        const val REQ_IMPORT = 4
     }
 }

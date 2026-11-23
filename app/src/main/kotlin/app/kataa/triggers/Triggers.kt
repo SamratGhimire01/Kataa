@@ -99,7 +99,8 @@ object Triggers {
         val pending = goAsync()
         val app = context.applicationContext as KataaApplication
         app.cores.worker.execute {
-            try { block(app) } finally { pending.finish() }
+            // An exception here would kill the worker thread and crash the app from the background.
+            try { block(app) } catch (t: Throwable) { android.util.Log.e("Kataa", "trigger failed", t) } finally { pending.finish() }
         }
     }
 

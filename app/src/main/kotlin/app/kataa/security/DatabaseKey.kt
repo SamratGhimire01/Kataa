@@ -29,6 +29,7 @@ object DatabaseKey {
         val file = File(context.noBackupFilesDir, FILE)
         val wrapKey = wrappingKey()
         if (file.exists()) {
+            // A Keystore failure here throws; CoreProvider then sets the old database aside.
             val blob = file.readBytes()
             val iv = blob.copyOfRange(1, 1 + blob[0])
             val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, wrapKey, GCMParameterSpec(128, iv)) }
@@ -41,6 +42,12 @@ object DatabaseKey {
         tmp.writeBytes(byteArrayOf(cipher.iv.size.toByte()) + cipher.iv + sealed)
         check(tmp.renameTo(file)) { "could not store database key" }
         return dbKey
+    }
+
+    /** Forget the stored key (only after the database it opened has been set aside). */
+    fun reset(context: Context) {
+        File(context.noBackupFilesDir, FILE).delete()
+        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS) }
     }
 
     private fun wrappingKey(): SecretKey {
