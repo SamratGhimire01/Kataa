@@ -48,10 +48,24 @@ class TestEmbedder(override val dimension: Int = 384, override val modelId: Stri
     private fun stem(w: String) = if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) w.dropLast(1) else w
 }
 
+/** Host build of native/ (scripts/build-native-host.sh). When present, tests run on the shipped C code. */
+val NATIVE_LIB: String? = System.getProperty("kataa.nativeLib")?.takeIf { File(it).exists() }
+
+/** `-Pkataa.driver=jdbc` forces the sqlite-jdbc driver; otherwise the native driver is used when built. */
+fun newDriver(path: String = ":memory:", key: ByteArray? = null): app.kataa.core.db.SqlDriver {
+    val lib = NATIVE_LIB
+    return if (lib != null && System.getProperty("kataa.driver") != "jdbc") {
+        app.kataa.core.db.KataaNative.load(lib)
+        app.kataa.core.db.NativeSqlDriver(path, key)
+    } else {
+        JdbcSqlDriver(path, SQLITE_VEC)
+    }
+}
+
 fun newCore(
     clock: FakeClock = FakeClock(),
     embedder: Embedder = TestEmbedder(),
     path: String = ":memory:",
     /** The test embedder's similarities are lower than a real model's; 0.35 plays the role of the real threshold. */
     minAnswerSimilarity: Double = 0.35,
-): KataaCore = KataaCore(JdbcSqlDriver(path, SQLITE_VEC), embedder, clock, minAnswerSimilarity = minAnswerSimilarity)
+): KataaCore = KataaCore(newDriver(path), embedder, clock, minAnswerSimilarity = minAnswerSimilarity)

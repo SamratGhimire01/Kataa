@@ -10,3 +10,6 @@ captures/
 *.db-wal
 *.db-shm
 models/
+native/third_party/
+native/build/
+app/.cxx/

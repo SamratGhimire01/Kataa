@@ -42,6 +42,9 @@ tasks.withType<Test>().configureEach {
             .orElse(rootProject.layout.projectDirectory.file("build/native/vec0").asFile.absolutePath)
             .get(),
     )
+    val nativeDir = rootProject.layout.projectDirectory.dir("native/build/host").asFile
+    systemProperty("kataa.nativeLib", listOf("libkataa_sqlite.so", "libkataa_sqlite.dylib").map { nativeDir.resolve(it) }.firstOrNull { it.exists() }?.absolutePath ?: "")
+    providers.gradleProperty("kataa.driver").orNull?.let { systemProperty("kataa.driver", it) }
     systemProperty("kataa.modelDir", rootProject.layout.projectDirectory.dir("models/bge-small-en-v1.5").asFile.absolutePath)
     maxHeapSize = "1g"
     testLogging { events("failed"); showStandardStreams = true; exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
