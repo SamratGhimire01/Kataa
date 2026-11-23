@@ -1,10 +1,12 @@
 [versions]
 kotlin = "2.4.21"
 serialization = "1.13.0"
+datetime = "0.8.0"
 sqlite-jdbc = "3.54.1.0"
 
 [libraries]
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "datetime" }
 sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
 
 [plugins]

@@ -49,6 +49,7 @@ class KataaCore(
     val reminders = ReminderRepository(db, clock)
     val geofences = GeofencePlanner(db, clock)
     val backup = BackupService(db, clock)
+    val assistant = app.kataa.core.assistant.Assistant(this)
 
     init {
         categories.onUserConfirmed = { memoryId, categoryId -> classifier.learn(memoryId, categoryId) }
