@@ -1,7 +1,16 @@
 package app.kataa
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.AlarmManager
+import android.app.AlertDialog
+import android.bluetooth.BluetoothManager
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import app.kataa.triggers.Triggers
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Bundle
@@ -40,6 +49,8 @@ class DevConsoleActivity : Activity() {
         status = TextView(this).apply { setPadding(pad, pad, pad, 0); textSize = 18f }
         log = TextView(this).apply { typeface = Typeface.MONOSPACE; setPadding(pad, pad, pad, pad); text = "Kataa developer console\n" }
         val talk = Button(this).apply { text = "Talk"; setOnClickListener { talk() } }
+        val perms = Button(this).apply { text = "Allow reminders (notifications, location, alarms, Bluetooth)"; setOnClickListener { askReminderPermissions() } }
+        val car = Button(this).apply { text = "Choose car Bluetooth"; setOnClickListener { chooseCar() } }
         val input = EditText(this).apply {
             hint = "Or type, e.g. my keys are in the drawer"
             imeOptions = EditorInfo.IME_ACTION_SEND
@@ -49,7 +60,7 @@ class DevConsoleActivity : Activity() {
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             fitsSystemWindows = true
-            addView(talk); addView(input); addView(status)
+            addView(talk); addView(perms); addView(car); addView(input); addView(status)
             addView(ScrollView(context).apply { addView(log) }, LinearLayout.LayoutParams(-1, 0, 1f))
         })
         scope.launch { session.state.collect(::render) }
@@ -66,6 +77,47 @@ class DevConsoleActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         if (requestCode == REQ_MIC && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) session.tapToTalk()
+        if (requestCode == REQ_REMINDERS && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) askReminderPermissions()
+    }
+
+    /** Step by step, as Android requires: notifications + location first, background location separately. */
+    private fun askReminderPermissions() {
+        val first = buildList {
+            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (Build.VERSION.SDK_INT >= 31) add(Manifest.permission.BLUETOOTH_CONNECT)
+        }.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        when {
+            first.isNotEmpty() -> requestPermissions(first.toTypedArray(), REQ_REMINDERS)
+            Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED ->
+                // Android shows this as "Allow all the time" in settings.
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQ_REMINDERS)
+            Build.VERSION.SDK_INT >= 31 && !getSystemService(AlarmManager::class.java).canScheduleExactAlarms() ->
+                startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
+            else -> {
+                log.append("\nAll reminder permissions granted.\n")
+                (application as KataaApplication).cores.worker.execute { Triggers.refreshAll(this) }
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun chooseCar() {
+        if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), REQ_REMINDERS); return
+        }
+        val devices = getSystemService(BluetoothManager::class.java)?.adapter?.bondedDevices?.toList().orEmpty()
+        if (devices.isEmpty()) { log.append("\nNo paired Bluetooth devices.\n"); return }
+        AlertDialog.Builder(this)
+            .setTitle("Which one is your car?")
+            .setItems(devices.map { (if (Build.VERSION.SDK_INT >= 30) it.alias else null) ?: it.name ?: it.address }.toTypedArray()) { _, i ->
+                val d = devices[i]
+                val app = application as KataaApplication
+                app.cores.worker.execute { app.cores.core.triggers.setBluetoothAlias("car", d.address) }
+                log.append("\nCar set to ${d.name ?: d.address}.\n")
+            }
+            .show()
     }
 
     private fun render(s: KataaState) {
@@ -91,5 +143,6 @@ class DevConsoleActivity : Activity() {
 
     private companion object {
         const val REQ_MIC = 1
+        const val REQ_REMINDERS = 2
     }
 }

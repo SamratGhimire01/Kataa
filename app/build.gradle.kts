@@ -58,6 +58,7 @@ dependencies {
     }
     implementation(libs.onnxruntime.android)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.play.services.location)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity)
 }
