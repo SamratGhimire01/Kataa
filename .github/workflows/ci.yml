@@ -21,6 +21,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Fetch sqlite-vec extension
         run: ./scripts/fetch-sqlite-vec.sh
+      - uses: actions/cache@v4
+        with:
+          path: models
+          key: model-${{ hashFiles('scripts/fetch-model.sh') }}
+      - run: ./scripts/fetch-model.sh
       - name: Shared core tests + benchmark
         run: ./gradlew :core:jvmTest --stacktrace
       - name: Upload test reports

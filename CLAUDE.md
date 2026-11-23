@@ -10,11 +10,14 @@ Plan, decisions and phases: `docs/BLUEPRINT.md`. User research: `docs/RESEARCH_f
 - Android app and native SQLite build (SQLCipher + FTS5 + R*Tree + sqlite-vec): Phase 1b, not yet present.
 
 ## Commands
-- `./scripts/fetch-sqlite-vec.sh` once (downloads the sqlite-vec extension for JVM tests).
+- `./scripts/fetch-sqlite-vec.sh` and `./scripts/fetch-model.sh` once (sqlite-vec extension; bge-small-en-v1.5 int8
+  ONNX model, 34 MB). Without the model, real-model tests print SKIP and pass.
 - `./gradlew :core:jvmTest` runs all tests and the 10k-memory benchmark (prints a `BENCH` line).
 
 ## Rules
 - Never pass raw user text to FTS `MATCH`; use `FtsQuery.build`.
 - Schema changes go through `Migrations` with a new `PRAGMA user_version`; never edit v1 statements in place after release.
 - Saving must stay instant: no ML on the save path; embedding/classification run in `KataaCore.processPending()`.
+- Search thresholds are per model (`Embedder.answerThreshold`, `categoryThreshold`), tuned on `SearchEval`. Changing the
+  model or search ranking: rerun `SearchQualityTest` and update the numbers. Add failing real queries to `SearchEval`.
 - Keep the speed budget: median hybrid search over 10k memories < 60 ms in `BenchmarkTest`.
