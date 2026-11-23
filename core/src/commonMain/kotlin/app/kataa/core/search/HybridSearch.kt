@@ -85,8 +85,30 @@ class HybridSearch(
         }.sortedWith(compareByDescending<SearchHit> { it.score }.thenByDescending { it.memory.createdAt })
             .take(options.limit)
 
-        val confident = hits.any { it.keywordRank != null || (it.similarity ?: 0.0) >= minSimilarity }
+        // A keyword hit only counts as an answer when it covers most of what was asked: "aadhar number"
+        // must not be answered by "the plumber's number" just because "number" matched.
+        val queryTokens = FtsQuery.tokens(query).filter { it !in QUESTION_FILLER }
+        val confident = hits.any { h ->
+            (h.similarity ?: 0.0) >= minSimilarity ||
+                (h.keywordRank != null && keywordCoverage(queryTokens, h.memory) >= MIN_KEYWORD_COVERAGE)
+        }
         return SearchResult(hits, confident)
+    }
+
+    /** Share of the query's content words found in the memory (prefix match, so "keys" ~ "key", "parked" ~ "park"). */
+    private fun keywordCoverage(queryTokens: List<String>, m: Memory): Double {
+        if (queryTokens.isEmpty()) return 0.0
+        val words = FtsQuery.tokens(m.body + " " + (m.extractedText ?: ""), maxTokens = 512)
+        val found = queryTokens.count { q -> words.any { w -> sameStem(q, w) } }
+        return found.toDouble() / queryTokens.size
+    }
+
+    private fun sameStem(a: String, b: String): Boolean {
+        if (a == b) return true
+        val n = minOf(a.length, b.length)
+        if (n < 3) return false
+        val stem = maxOf(3, minOf(a.length, b.length, maxOf(a.length, b.length) - 3))
+        return a.length >= stem && b.length >= stem && a.regionMatches(0, b, 0, stem)
     }
 
     private fun keywordCandidates(query: String, o: SearchOptions): List<Long> {
@@ -113,7 +135,7 @@ class HybridSearch(
     private fun vectorCandidates(query: String, o: SearchOptions): List<Pair<Long, Double>> {
         val e = embedder ?: return emptyList()
         if (query.isBlank()) return emptyList()
-        val q = Vectors.toBlob(e.embed(query))
+        val q = Vectors.toBlob(e.embedQuery(query))
         // The category constraint must be inside the KNN query: sqlite-vec applies "memory_id IN (...)"
         // before choosing the k nearest. Filtering afterwards can return nothing.
         return if (o.categoryId == null) {
@@ -152,6 +174,10 @@ class HybridSearch(
     }
 
     companion object {
+        private const val MIN_KEYWORD_COVERAGE = 0.6
+        /** Words that shape a question but say nothing about the answer. */
+        private val QUESTION_FILLER = setOf("put", "keep", "kept", "left", "leave", "much", "many", "name", "time", "day", "date", "last", "next", "get", "got")
+
         const val RRF_K = 60.0
         const val RECENCY_WEIGHT = 0.15
         const val RECENCY_DAYS = 30.0

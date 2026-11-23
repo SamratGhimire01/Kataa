@@ -32,9 +32,9 @@ class KataaCore(
     val embedder: Embedder,
     val clock: TimeSource = TimeSource.System,
     ids: IdGenerator = IdGenerator.Random,
-    classifierConfig: ClassifierConfig = ClassifierConfig(),
-    /** Vector-only matches below this cosine similarity do not count as an answer. */
-    minAnswerSimilarity: Double = 0.55,
+    classifierConfig: ClassifierConfig = ClassifierConfig(minSimilarity = embedder.categoryThreshold),
+    /** Meaning-only matches below this cosine similarity do not count as an answer. Defaults to the model's own. */
+    minAnswerSimilarity: Double = embedder.answerThreshold,
 ) : AutoCloseable {
     init {
         Migrations.migrate(db, embedder, clock.nowMs())

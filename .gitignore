@@ -9,3 +9,4 @@ captures/
 *.db
 *.db-wal
 *.db-shm
+models/

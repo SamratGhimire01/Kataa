@@ -15,6 +15,18 @@ interface Embedder {
     fun embed(text: String): FloatArray
 
     fun embedBatch(texts: List<String>): List<FloatArray> = texts.map(::embed)
+
+    /**
+     * Cosine similarity at which a meaning-only match counts as an answer. Every model has its own
+     * similarity scale, so this is measured per model on the eval set (SearchQualityTest).
+     */
+    val answerThreshold: Double get() = 0.55
+
+    /** Cosine similarity a memory needs to a category prototype to be auto-filed there. Also per model. */
+    val categoryThreshold: Double get() = 0.30
+
+    /** Embeds a search query. Some models (bge) want an instruction prefix for short queries. */
+    fun embedQuery(text: String): FloatArray = embed(text)
 }
 
 object Vectors {
