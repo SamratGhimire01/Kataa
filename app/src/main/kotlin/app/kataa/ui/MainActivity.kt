@@ -28,6 +28,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -49,6 +50,7 @@ import app.kataa.core.model.ReminderType
 import app.kataa.core.session.KataaState
 import app.kataa.core.session.SpeechError
 import app.kataa.triggers.Triggers
+import app.kataa.voice.AndroidSpeechEngine
 import app.kataa.voice.Speaker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -116,7 +118,12 @@ class MainActivity : ComponentActivity() {
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) startTalking() else showMessage("Kataa needs the microphone to hear you. You can type instead.", typeLink = true)
     }
-    private val reminderPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { askReminderPermissions() }
+    /** The phone's own voice typing screen: the fallback when in-app listening can't start. */
+    private val voiceTyping = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        val text = AndroidSpeechEngine.voiceTypingResult(res.data)
+        if (text != null) session.type(text)
+    }
+    private val reminderPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { askReminderPermissions(next = true) }
     private val takePhoto = registerForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val m = snapFor ?: return@registerForActivityResult
         snapFor = null
@@ -396,8 +403,13 @@ class MainActivity : ComponentActivity() {
             is KataaState.Failed -> when (s.error) {
                 SpeechError.NO_SPEECH -> session.dismiss()
                 SpeechError.NO_PERMISSION -> { session.dismiss(); micPermission.launch(Manifest.permission.RECORD_AUDIO) }
-                SpeechError.UNAVAILABLE -> { session.dismiss(); showTypeBar() }
-                SpeechError.OTHER -> showMessage("I couldn't catch that. Tap the drop to try again.")
+                SpeechError.UNAVAILABLE -> {
+                    session.dismiss()
+                    val i = AndroidSpeechEngine.voiceTypingIntent(this)
+                    if (i != null) runCatching { voiceTyping.launch(i) }.onFailure { showTypeBar() }
+                    else showMessage("This phone has no voice typing installed. Install Google or Speech Services by Google from the Play Store, or type instead.", typeLink = true)
+                }
+                SpeechError.OTHER -> showMessage("I couldn't catch that (error ${AndroidSpeechEngine.lastErrorCode}). Tap the drop to try again.")
             }
         }
     }
@@ -821,7 +833,7 @@ class MainActivity : ComponentActivity() {
             })
         }, LinearLayout.LayoutParams(-1, ui.dpi(52f)))
         sectionTitle("Reminders")
-        list.addView(settingsRow("Allow reminders", "Notifications, location for store reminders, exact alarms, car Bluetooth") { askReminderPermissions() })
+        list.addView(settingsRow("Allow reminders", "Notifications, location for store reminders, exact alarms, car Bluetooth") { askReminderPermissions(next = false) })
         list.addView(settingsRow("Car, backups and tools", "Pick your car's Bluetooth, save an encrypted backup, restore") {
             startActivity(Intent(this, DevConsoleActivity::class.java))
         })
@@ -839,7 +851,11 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Step by step, as Android requires: notifications + location first, background location separately. */
-    private fun askReminderPermissions() {
+    /** Which step of the reminder permission walk we're on; each step is asked once per tap, so a "deny" never loops. */
+    private var permStep = 0
+
+    private fun askReminderPermissions(next: Boolean) {
+        permStep = if (next) permStep + 1 else 0
         val first = buildList {
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
             add(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -847,13 +863,37 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= 31) add(Manifest.permission.BLUETOOTH_CONNECT)
         }.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         when {
-            first.isNotEmpty() -> reminderPermissions.launch(first.toTypedArray())
-            Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED ->
+            permStep == 0 && first.isNotEmpty() -> reminderPermissions.launch(first.toTypedArray())
+            permStep <= 1 && Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED -> {
+                permStep = 1
+                // Android shows this as a settings page: the user has to pick "Allow all the time".
+                Toast.makeText(this, "For place reminders, pick \"Allow all the time\"", Toast.LENGTH_LONG).show()
                 reminderPermissions.launch(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION))
-            Build.VERSION.SDK_INT >= 31 && !getSystemService(AlarmManager::class.java).canScheduleExactAlarms() ->
-                startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
-            else -> app.cores.worker.execute { runCatching { Triggers.refreshAll(this) } }
+            }
+            permStep <= 2 && Build.VERSION.SDK_INT >= 31 && !getSystemService(AlarmManager::class.java).canScheduleExactAlarms() -> {
+                permStep = 2
+                Toast.makeText(this, "Turn on alarms so reminders ring on time", Toast.LENGTH_LONG).show()
+                runCatching { startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName"))) }
+            }
+            else -> {
+                app.cores.worker.execute { runCatching { Triggers.refreshAll(this) } }
+                Toast.makeText(this, reminderStatus(), Toast.LENGTH_LONG).show()
+            }
         }
+    }
+
+    /** A plain summary of what reminders can do with the permissions the user gave. */
+    private fun reminderStatus(): String {
+        fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+        val notif = Build.VERSION.SDK_INT < 33 || has(Manifest.permission.POST_NOTIFICATIONS)
+        val exact = Build.VERSION.SDK_INT < 31 || getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+        val place = has(Manifest.permission.ACCESS_FINE_LOCATION) && (Build.VERSION.SDK_INT < 29 || has(Manifest.permission.ACCESS_BACKGROUND_LOCATION))
+        return listOf(
+            if (notif) "Notifications on" else "Notifications OFF",
+            if (exact) "alarms on time" else "alarms may be a few minutes late",
+            if (place) "place reminders on" else "place reminders OFF",
+        ).joinToString(", ")
     }
 
     // ---------------------------------------------------------------- small things

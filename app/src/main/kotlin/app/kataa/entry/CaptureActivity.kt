@@ -23,6 +23,8 @@ import app.kataa.ui.Motion
 import app.kataa.ui.NebulaView
 import app.kataa.ui.ShineTextView
 import app.kataa.ui.Ui
+import app.kataa.core.session.SpeechError
+import app.kataa.voice.AndroidSpeechEngine
 import app.kataa.voice.Speaker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +53,12 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var line: android.widget.TextView
     private var closer: Job? = null
     private val session get() = (application as KataaApplication).session
+    private var inVoiceTyping = false
+    private val voiceTyping = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
+        inVoiceTyping = false
+        val text = AndroidSpeechEngine.voiceTypingResult(res.data)
+        if (text != null) session.type(text) else finish()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -126,7 +134,12 @@ class CaptureActivity : ComponentActivity() {
             is KataaState.Listening -> { nebula.setState(NebulaView.State.LISTEN); nebula.voiceLevel = s.level; say(s.partial.ifEmpty { "Listening…" }) }
             is KataaState.Thinking -> { nebula.setState(NebulaView.State.THINK); say(s.heard) }
             is KataaState.Done -> {}
-            is KataaState.Failed -> { nebula.setState(NebulaView.State.IDLE); say("Couldn't hear you. Tap to try again.") }
+            is KataaState.Failed -> {
+                nebula.setState(NebulaView.State.IDLE)
+                val typing = if (s.error == SpeechError.UNAVAILABLE) AndroidSpeechEngine.voiceTypingIntent(this) else null
+                if (typing != null) { session.dismiss(); inVoiceTyping = true; runCatching { voiceTyping.launch(typing) }.onFailure { inVoiceTyping = false } }
+                else say(if (s.error == SpeechError.UNAVAILABLE) "No voice typing on this phone." else "Couldn't hear you. Tap to try again.")
+            }
         }
         if (s !is KataaState.Done) return
         if (locked() && revealsMemories(s.reply)) {
@@ -171,7 +184,7 @@ class CaptureActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (!isChangingConfigurations) { session.cancel(); finish() }
+        if (!isChangingConfigurations && !inVoiceTyping) { session.cancel(); finish() }
     }
 
     override fun onDestroy() {
