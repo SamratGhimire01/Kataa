@@ -1,19 +1,28 @@
 package app.kataa.entry
 
 import android.Manifest
-import android.app.Activity
+import android.app.KeyguardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import app.kataa.KataaApplication
-import android.app.KeyguardManager
 import app.kataa.core.assistant.Reply
 import app.kataa.core.assistant.ReplyText
 import app.kataa.core.session.KataaState
+import app.kataa.ui.Look
+import app.kataa.ui.Motion
+import app.kataa.ui.NebulaView
+import app.kataa.ui.ShineTextView
+import app.kataa.ui.Ui
 import app.kataa.voice.Speaker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,16 +34,21 @@ import kotlinx.coroutines.launch
 
 /**
  * Quick capture: opened by the power-key assistant, the quick tile, the home widget and app shortcuts.
- * Starts listening at once, shows the result, then gets out of the way. Placeholder look; the
- * frontend phase gives it the orb.
+ * A glass sheet rises from the bottom with the Nebula drop, starts listening at once, shows the result
+ * (tick and the shining word), then gets out of the way.
  *
  * Over the lock screen it only *saves*: answers can contain private things, so questions asked while
  * locked are answered after unlock.
  */
-class CaptureActivity : Activity() {
+class CaptureActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private lateinit var text: TextView
     private lateinit var speaker: Speaker
+    private lateinit var look: Look
+    private lateinit var ui: Ui
+    private lateinit var sheet: LinearLayout
+    private lateinit var nebula: NebulaView
+    private lateinit var shine: ShineTextView
+    private lateinit var line: android.widget.TextView
     private var closer: Job? = null
     private val session get() = (application as KataaApplication).session
 
@@ -42,15 +56,39 @@ class CaptureActivity : Activity() {
         super.onCreate(savedInstanceState)
         if (android.os.Build.VERSION.SDK_INT >= 27) setShowWhenLocked(true)
         else @Suppress("DEPRECATION") window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
-        window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         speaker = Speaker(this)
-        val pad = (24 * resources.displayMetrics.density).toInt()
-        text = TextView(this).apply { textSize = 20f; setPadding(pad, pad, pad, pad); gravity = Gravity.CENTER; text = "…" }
-        setContentView(LinearLayout(this).apply {
-            gravity = Gravity.CENTER
-            addView(text)
+        look = Look.current(this)
+        ui = Ui(this, look)
+
+        nebula = NebulaView(this).apply { look = this@CaptureActivity.look; moveTo(0.5f, 2.3f, instant = true) }
+        shine = ShineTextView(this).apply { look = this@CaptureActivity.look; setMaxTextSize(ui.dp(40f)) }
+        line = ui.text(18f, 600, look.fg, Gravity.CENTER, lines = 4).apply { text = "Listening…" }
+        sheet = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(NebulaView.withAlpha(look.bg, 0.94f)); cornerRadius = ui.dp(34f); setStroke(1, look.glassLine)
+            }
+            setPadding(ui.dpi(24f), ui.dpi(10f), ui.dpi(24f), ui.dpi(28f))
+            addView(nebula, LinearLayout.LayoutParams(-1, ui.dpi(200f)))
+            addView(FrameLayout(this@CaptureActivity).apply {
+                addView(line, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+                addView(shine, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+            }, LinearLayout.LayoutParams(-1, ui.dpi(96f)))
             setOnClickListener { session.tapToTalk() } // tap to finish / talk again
-        })
+            translationY = ui.dp(400f)
+        }
+        val root = FrameLayout(this).apply {
+            addView(sheet, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { leftMargin = ui.dpi(10f); rightMargin = ui.dpi(10f) })
+            setOnClickListener { session.cancel(); finish() }
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val b = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+            (sheet.layoutParams as FrameLayout.LayoutParams).bottomMargin = b + ui.dpi(10f)
+            sheet.requestLayout(); insets
+        }
+        setContentView(root)
+        sheet.animate().translationY(0f).setDuration(650).setInterpolator(Motion.spring).start()
         scope.launch { session.state.collect(::render) }
         start(intent)
     }
@@ -69,33 +107,60 @@ class CaptureActivity : Activity() {
         if (session.state.value !is KataaState.Listening) session.tapToTalk()
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    @Deprecated("Simple one-off permission request")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        @Suppress("DEPRECATION") super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) session.tapToTalk() else finish()
+    }
+
+    private fun say(text: String) {
+        shine.hide()
+        line.visibility = View.VISIBLE
+        line.text = text
     }
 
     private fun render(s: KataaState) {
         closer?.cancel()
-        text.text = when (s) {
-            KataaState.Idle -> "Tap to talk"
-            is KataaState.Listening -> s.partial.ifEmpty { "Listening…" }
-            is KataaState.Thinking -> s.heard
-            is KataaState.Done -> ReplyText.of(s.reply)
-            is KataaState.Failed -> "Couldn't hear you. Tap to try again."
+        when (s) {
+            KataaState.Idle -> { nebula.setState(NebulaView.State.IDLE); say("Tap to talk") }
+            is KataaState.Listening -> { nebula.setState(NebulaView.State.LISTEN); nebula.voiceLevel = s.level; say(s.partial.ifEmpty { "Listening…" }) }
+            is KataaState.Thinking -> { nebula.setState(NebulaView.State.THINK); say(s.heard) }
+            is KataaState.Done -> {}
+            is KataaState.Failed -> { nebula.setState(NebulaView.State.IDLE); say("Couldn't hear you. Tap to try again.") }
         }
-        if (s is KataaState.Done && locked() && revealsMemories(s.reply)) {
+        if (s !is KataaState.Done) return
+        if (locked() && revealsMemories(s.reply)) {
             // Over the lock screen: saving is fine, but answers wait for the owner to unlock.
-            text.text = "Unlock to see the answer"
+            say("Unlock to see the answer")
             getSystemService(KeyguardManager::class.java).requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
                 override fun onDismissSucceeded() = render(s)
                 override fun onDismissCancelled() = finish()
             })
             return
         }
-        if (s is KataaState.Done) {
-            val line = ReplyText.of(s.reply)
-            speaker.say(line)
-            // Leave the answer up long enough to read, then close.
-            closer = scope.launch { delay(1500L + line.length * 45L); session.dismiss(); finish() }
+        val text = ReplyText.of(s.reply)
+        val word = when (s.reply) {
+            is Reply.Saved -> "Saved"
+            is Reply.ReminderSet -> "Reminder set"
+            is Reply.PlaceSaved -> "Place saved"
+            is Reply.Corrected -> "Fixed"
+            is Reply.Undone -> "Deleted"
+            else -> null
+        }
+        if (word != null) {
+            nebula.setState(NebulaView.State.DONE)
+            line.visibility = View.INVISIBLE
+            shine.show(word)
+        } else {
+            nebula.setState(NebulaView.State.IDLE)
+            say(text)
+        }
+        if (Look.speakReplies(this)) speaker.say(text)
+        // Leave the result up long enough to read, then slide away.
+        closer = scope.launch {
+            delay(if (word != null) 2600L else 1800L + text.length * 45L)
+            session.dismiss()
+            sheet.animate().translationY(sheet.height + ui.dp(40f)).setDuration(380).setInterpolator(Motion.exit).withEndAction { finish() }.start()
         }
     }
 

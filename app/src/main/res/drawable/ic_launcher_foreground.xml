@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Nebula drop: a glowing, slightly wobbly drop with a highlight and two sparkles. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M54,30C67,29 79,38 78.5,53C78,68 67,79.5 53,78.5C39,77.5 29.5,67 30,53.5C30.5,40 41,31 54,30Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="34" android:startY="34" android:endX="76" android:endY="76">
+                <item android:offset="0" android:color="#FF00FF88" />
+                <item android:offset="1" android:color="#FF00C2FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:pathData="M47,38C53,36 59,39 58,43C57,47 50,47 46,46C42,45 42,40 47,38Z" android:fillColor="#73FFFFFF" />
+    <path android:pathData="M64,62m-1.6,0a1.6,1.6 0,1 1,3.2 0a1.6,1.6 0,1 1,-3.2 0" android:fillColor="#E6FFFFFF" />
+    <path android:pathData="M45,60m-1.1,0a1.1,1.1 0,1 1,2.2 0a1.1,1.1 0,1 1,-2.2 0" android:fillColor="#CCFFFFFF" />
+</vector>

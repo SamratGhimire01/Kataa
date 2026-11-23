@@ -12,6 +12,8 @@ datetime = "0.8.0"
 sqlite-jdbc = "3.54.1.0"
 
 [libraries]
+robolectric = { module = "org.robolectric:robolectric", version = "4.16" }
+junit = { module = "junit:junit", version = "4.13.2" }
 mlkit-text-recognition = { module = "com.google.android.gms:play-services-mlkit-text-recognition", version.ref = "mlkit-text" }
 play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "play-location" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }

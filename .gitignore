@@ -13,3 +13,5 @@ models/
 native/third_party/
 native/build/
 app/.cxx/
+keystore.properties
+*.jks

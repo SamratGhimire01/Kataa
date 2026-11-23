@@ -62,7 +62,7 @@ jobs:
       - name: Check 16 KB alignment (Play requirement)
         run: |
           ZA=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/zipalign
-          "$ZA" -c -P 16 -v 4 app/build/outputs/apk/release/app-release-unsigned.apk | tail -1
+          for apk in app/build/outputs/apk/release/*.apk; do "$ZA" -c -P 16 -v 4 "$apk" | tail -1; done
       - uses: actions/upload-artifact@v4
         with:
           name: kataa-release-unsigned

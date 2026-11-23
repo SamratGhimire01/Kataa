@@ -1,3 +1,4 @@
+import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
 }
@@ -14,10 +15,6 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
-        ndk {
-            // 32-bit ARM stays in: many budget phones still run 32-bit Android.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
         externalNativeBuild {
             cmake { arguments += listOf("-DANDROID_STL=none") }
         }
@@ -27,8 +24,32 @@ android {
         cmake { path = file("../native/CMakeLists.txt") }
     }
 
+    // Sideload signing for test builds you install by hand. The keystore lives outside the repo; with no
+    // keystore.properties the release APK is unsigned (CI), and Play signing is set up separately at launch.
+    val sideload = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { f ->
+        val p = Properties(); f.inputStream().use { p.load(it) }; p
+    }
+    if (sideload != null) signingConfigs.create("sideload") {
+        storeFile = file(sideload.getProperty("storeFile"))
+        storePassword = sideload.getProperty("storePassword")
+        keyAlias = sideload.getProperty("keyAlias")
+        keyPassword = sideload.getProperty("keyPassword")
+    }
+
+    // One APK per phone type, so each download carries only the native code that phone runs.
+    // 32-bit ARM stays in: many budget phones still run 32-bit Android.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         release {
+            if (sideload != null) signingConfig = signingConfigs.getByName("sideload")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -43,6 +64,8 @@ android {
     // The search model ships inside the APK (scripts/fetch-model.sh puts it in models/).
     sourceSets["main"].assets.directories += rootProject.layout.projectDirectory.dir("models").asFile.path
     androidResources { noCompress += listOf("onnx") }
+
+    testOptions { unitTests.isIncludeAndroidResources = true }
 
     packaging {
         // Store .so files uncompressed and 16 KB aligned (Play requirement), loaded straight from the APK.
@@ -63,4 +86,8 @@ dependencies {
     implementation(libs.mlkit.text.recognition)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity)
+
+    // Renders the real screens on the JVM (no phone needed) to catch crashes and check the look.
+    testImplementation(libs.robolectric)
+    testImplementation(libs.junit)
 }

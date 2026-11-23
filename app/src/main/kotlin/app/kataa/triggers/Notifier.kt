@@ -7,7 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import app.kataa.DevConsoleActivity
+import app.kataa.ui.MainActivity
 import app.kataa.R
 import app.kataa.core.model.ReminderType
 import app.kataa.core.triggers.Alert
@@ -80,7 +80,7 @@ object Notifier {
         Notification.Builder(context, channel).setSmallIcon(R.drawable.ic_notification).setShowWhen(true)
 
     private fun openApp(context: Context) = PendingIntent.getActivity(
-        context, 0, Intent(context, DevConsoleActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+        context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
         PendingIntent.FLAG_IMMUTABLE,
     )
 

@@ -11,6 +11,11 @@ import app.kataa.voice.AndroidSpeechEngine
 import kotlinx.datetime.TimeZone
 
 class KataaApplication : Application() {
+    /** After the owner unlocks with fingerprint/PIN, Private answers are shown for a short while. */
+    @Volatile private var privateUnlockedUntil = 0L
+
+    fun unlockPrivateFor(ms: Long) { privateUnlockedUntil = System.currentTimeMillis() + ms }
+
     lateinit var cores: CoreProvider
         private set
 
@@ -19,7 +24,10 @@ class KataaApplication : Application() {
         KataaSession(
             core = { cores.core },
             speech = AndroidSpeechEngine.createOrNull(this),
-            context = { AssistantContext(System.currentTimeMillis(), TimeZone.currentSystemDefault()) },
+            context = {
+                val now = System.currentTimeMillis()
+                AssistantContext(now, TimeZone.currentSystemDefault(), privateUnlocked = now < privateUnlockedUntil)
+            },
             runOnCore = { block ->
                 cores.worker.execute {
                     block()
