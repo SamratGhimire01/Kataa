@@ -46,7 +46,17 @@ data class AssistantContext(
 /** Everything the UI needs to show the result of one utterance. */
 sealed interface Reply {
     data class Saved(val memory: Memory) : Reply
-    data class ReminderSet(val memory: Memory, val reminders: List<Reminder>, val description: String) : Reply
+    /** The same thing was already saved: nothing new was stored. */
+    data class AlreadySaved(val memory: Memory) : Reply
+    /** A fact with one current value changed ("my wifi password is ..."): [old] went to the trash. */
+    data class Replaced(val old: Memory, val memory: Memory) : Reply
+    data class ReminderSet(
+        val memory: Memory,
+        val reminders: List<Reminder>,
+        val description: String,
+        /** Something the user should do for it to work ("say 'this is Big Mart' when you're there"). */
+        val hint: String? = null,
+    ) : Reply
     /** Reminder text was saved, but Kataa does not know where [placeName] is yet ("home" before it was set). */
     data class NeedsPlace(val memory: Memory, val placeName: String) : Reply
     /** Reminder text was saved, but no time or moment was said: ask "When should I remind you?". */
@@ -92,7 +102,28 @@ class Assistant(private val core: KataaCore) {
     fun saveAsNote(raw: String, ctx: AssistantContext): Reply =
         save(raw, Understanding.Save(IntentParser.saveBody(raw), MemoryKind.NOTE, null, null), ctx)
 
+    /** A live memory that says the same thing, if there is one. */
+    private fun duplicateOf(body: String, kind: MemoryKind? = null): Memory? {
+        val key = IntentParser.sameKey(body)
+        if (key.isEmpty()) return null
+        return core.memories.recent(limit = 400).firstOrNull { (kind == null || it.kind == kind) && IntentParser.sameKey(it.body) == key }
+    }
+
     private fun save(raw: String, u: Understanding.Save, ctx: AssistantContext): Reply {
+        if (u.replacesOld && u.subject != null) {
+            val old = core.memories.historyFor(u.subject)?.latest
+            if (old != null && IntentParser.sameKey(old.body) == IntentParser.sameKey(u.body)) return Reply.AlreadySaved(old)
+            if (old != null) {
+                val m = core.memories.save(NewMemory(body = u.body, kind = u.kind, source = ctx.source,
+                    rawTranscript = raw.takeIf { ctx.source == Source.VOICE }, subject = u.subject))
+                core.memories.trash(old.id)
+                setLast(m.id)
+                return Reply.Replaced(old, m)
+            }
+        }
+        // Logs ("I took my meds") repeat on purpose; everything else is stored once.
+        val isLog = u.kind == MemoryKind.FACT && !u.replacesOld
+        if (!isLog) duplicateOf(u.body)?.let { return Reply.AlreadySaved(it) }
         val m = core.memories.save(
             NewMemory(
                 body = u.body, kind = u.kind, source = ctx.source,
@@ -105,6 +136,13 @@ class Assistant(private val core: KataaCore) {
     }
 
     private fun remind(raw: String, u: Understanding.Remind, ctx: AssistantContext): Reply {
+        // "Call mom" said twice: keep one. A time or place said the second time is added to the first one.
+        duplicateOf(u.body, MemoryKind.REMINDER)?.let { existing ->
+            val active = core.reminders.forMemory(existing.id).any { it.status.name in setOf("SCHEDULED", "SNOOZED") }
+            if (u.time == null && u.moment == null) return if (active) Reply.AlreadySaved(existing) else Reply.NeedsTime(existing)
+            setLast(existing.id)
+            return schedule(existing, u.time, u.moment, u.persistent, ctx)
+        }
         val memory = core.memories.save(
             NewMemory(u.body, MemoryKind.REMINDER, ctx.source, rawTranscript = raw.takeIf { ctx.source == Source.VOICE }),
         )
@@ -126,6 +164,8 @@ class Assistant(private val core: KataaCore) {
         }
         if (memory != null && core.memories.get(memory.id)?.deletedAt == null) {
             val text = Text.normalize(raw)
+            // "no", "skip", "just save it": keep it as a to-do without a time.
+            if (NO_TIME.matches(text)) return Reply.Saved(memory)
             val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
             val time = TimeParser.parse(text, ctx.nowMs, ctx.timeZone)
             val moment = PlaceParser.parse(text, known) ?: if (time == null) bareMoment(text) else null
@@ -146,6 +186,7 @@ class Assistant(private val core: KataaCore) {
     private fun schedule(memory: Memory, time: app.kataa.core.nlu.TimeMatch?, moment: MomentMatch?, persistent: Boolean, ctx: AssistantContext): Reply {
         val created = mutableListOf<Reminder>()
         val parts = mutableListOf<String>()
+        var hint: String? = null
         time?.let { t ->
             created += core.reminders.addTime(memory.id, t.fireAt.toEpochMilliseconds(), ctx.timeZone.id, t.rrule, persistent)
             parts += Describe.time(t.fireAt, t.rrule, ctx)
@@ -163,6 +204,11 @@ class Assistant(private val core: KataaCore) {
                 is Resolved.Target -> {
                     created += core.reminders.addPlace(memory.id, target.target, onExit = moment.onExit, persistent = persistent)
                     parts += (if (moment.onExit) "when you leave " else "when you arrive at ") + target.spoken
+                    // A shop Kataa has never been told about can't fire yet: say how to teach it, once.
+                    (target.target as? PlaceTarget.Brand)?.let { b ->
+                        val known = core.places.nearest(0.0, 0.0, brand = b.brand, maxDistanceM = 2.1e7, limit = 1).isNotEmpty()
+                        if (!known) hint = "Next time you're at ${restoreTitle(b.brand)}, say \"this is ${restoreTitle(b.brand)}\" once and I'll know it from then on."
+                    }
                 }
                 is Resolved.Unknown -> return Reply.NeedsPlace(memory, target.name)
                 Resolved.NoLocation -> return Reply.NeedsLocation
@@ -170,7 +216,7 @@ class Assistant(private val core: KataaCore) {
             null -> Unit
         }
         if (created.isEmpty()) return Reply.NeedsTime(memory)
-        return Reply.ReminderSet(memory, created, Text.sentence(parts.joinToString(", or ")))
+        return Reply.ReminderSet(memory, created, Text.sentence(parts.joinToString(", or ")), hint)
     }
 
     private sealed interface Resolved {
@@ -306,6 +352,7 @@ class Assistant(private val core: KataaCore) {
     companion object {
         private const val LAST_KEY = "assistant_last_memory_id"
         private const val CORRECTION_WINDOW_MS = 30 * 60 * 1000L
+        private val NO_TIME = Regex("^(?:no|nope|nah|no thanks|no thank you|skip|skip it|nothing|no time|not now|never mind|nevermind|just save it|just save|save it|later|i will decide later|do not remind me|no need|it is fine|fine|ok|okay|leave it)$")
         private val LOCATION_ONLY = Regex("^(?:in|inside|on|under|behind|beside|next to|near|by|at|in front of|on top of|with)\\b")
     }
 }

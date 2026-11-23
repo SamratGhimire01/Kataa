@@ -7,7 +7,14 @@ enum class QuestionType { WHERE, DID_I, WHEN, GENERAL }
 
 /** What the user meant, before anything is stored. */
 sealed interface Understanding {
-    data class Save(val body: String, val kind: MemoryKind, val subject: String?, val objectLocation: ObjectLocationMatch?) : Understanding
+    data class Save(
+        val body: String,
+        val kind: MemoryKind,
+        val subject: String?,
+        val objectLocation: ObjectLocationMatch?,
+        /** A fact with one current value ("my wifi password is ..."): saving it replaces the older one. */
+        val replacesOld: Boolean = false,
+    ) : Understanding
     data class Remind(
         val body: String,
         val time: TimeMatch?,
@@ -47,11 +54,19 @@ object IntentParser {
     private val DID_I = Regex("^(?:did|have) i (?:already )?(.+?)(?: already)?(?: (today|this morning|tonight|yesterday|this evening))?$")
     private val WHERE = Regex("^where(?: is| are| was| were| did i (?:put|leave|keep|park|hide|place|store|drop)| have i (?:put|left|kept|parked)| do i keep| i put| is it that i (?:put|left))?(?: my| the| our)? (.+?)(?: again| now| at)?$")
     private val WHERE_PARKED = Regex("^where (?:did|have) (?:i|we) park(?:ed)?(?: the car| my car)?(?: again)?$|^where is (?:my |the )?(?:car|parking)$")
-    private val QUESTION_START = Regex("^(?:what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
+    private val QUESTION_START = Regex("^(?:give me|get me|tell me|show me|send me|i need|i want to know|i forgot|i do not remember|remind me what|what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
     private val REMIND_CUE = Regex("\\bremind me\\b|\\b(?:alert|notify|ping|nudge) me\\b|^(?:remember|do not forget|make sure i|make sure to|do not let me forget) to\\b|\\bnag me\\b|\\bkeep reminding me\\b")
     private val OBLIGATION = Regex("\\b(?:i |we )?(?:have to|need to|must|should|got to|gotta|ought to)\\b")
     private val PERSISTENT = Regex("\\b(?:keep reminding me|nag me|until i (?:do it|mark it|say done|finish)|do not let me forget|important|really important|must not forget)\\b")
     private val LOG_DONE = Regex("^(?:i |we )(?:just |already |have |have just )*(took|locked|fed|paid|turned off|switched off|turned on|switched on|closed|watered|gave|called|sent|charged|cleaned|took out|unplugged|plugged in|finished|did|submitted|returned|ate|drank|shut)\\b\\s*(.*)$")
+
+    /** "My facebook password is what" / "my locker code is what is": a question said backwards. */
+    private val TRAILING_WHAT = Regex("\\b(?:is|are|was)? ?what(?: is| was| it is)?$")
+    /** "My wifi password is abc123", "my locker code is 4412": a fact with a value. A newer one replaces the older. */
+    private val KEY_VALUE = Regex("^(?:my|our|the) ((?:[a-z0-9']+ ){0,3}?(?:password|passcode|pin|pin code|code|number|no|id|username|user name|email|account|account number|login|otp|combination|size|blood group|birthday|address|plate|plate number|license number|policy number|locker|wifi|wi-fi)) (?:is|are|=) (.+)$")
+    /** A task said on its own ("call mom", "buy milk"): becomes a reminder and Kataa asks when. */
+    private val TASK_START = Regex("^(?:please )?(?:call|phone|ring|text|message|email|mail|buy|get(?! me\\b)|pick up|collect|pay|book|order|send|submit|return|renew|recharge|top up|bring|take|fix|clean|wash|charge|meet|visit|cancel|check|print|post|transfer|withdraw|deposit|apply for|finish|complete|write|reply to|wish|congratulate)\\b")
+    private val NOT_A_TASK = Regex("\\b(?:is|are|was|were|am)\\b")
 
     private val HOME_WORDS = setOf("home", "house", "office", "work", "hostel", "room", "my room")
 
@@ -74,12 +89,18 @@ object IntentParser {
             if (name.split(' ').size <= 3 && TimeParser.parse(text, nowMs, tz) == null) return Understanding.SavePlace(name, explicit = false)
         }
 
+        // "my facebook password is what" / "... what is": the recognizer heard a question backwards.
+        if (TRAILING_WHAT.containsMatchIn(text) && text.split(' ').size <= 10) {
+            return Understanding.Ask(TRAILING_WHAT.replace(text, "").trim().ifEmpty { text }, QuestionType.GENERAL, null)
+        }
+
         // Reminders before questions: "remind me what time..." is rare; "can you remind me to..." is common.
         val remindCue = REMIND_CUE.containsMatchIn(text)
         val time = TimeParser.parse(text, nowMs, tz)
         val moment = PlaceParser.parse(text, knownPlaceNames)
         val obligation = OBLIGATION.containsMatchIn(text)
-        if (remindCue || (obligation && (time != null || moment != null))) {
+        val task = TASK_START.containsMatchIn(text) && !NOT_A_TASK.containsMatchIn(text) && !questionMark
+        if (remindCue || (obligation && (time != null || moment != null)) || task) {
             return Understanding.Remind(reminderBody(text, raw, time, moment), time, moment, PERSISTENT.containsMatchIn(text))
         }
 
@@ -102,6 +123,12 @@ object IntentParser {
             return Understanding.Ask(text, type, null)
         }
 
+        KEY_VALUE.find(text)?.let { m ->
+            val value = m.groupValues[2].trim()
+            if (value.isNotEmpty() && !value.startsWith("in ") && !value.startsWith("on ") && !value.startsWith("under ")) {
+                return Understanding.Save(saveBody(raw), MemoryKind.FACT, Text.subjectKey(m.groupValues[1]), null, replacesOld = true)
+            }
+        }
         LOG_DONE.find(text)?.let { m ->
             val obj = m.groupValues[2]
             if (ObjectLocation.extract(text) == null) {
@@ -112,8 +139,22 @@ object IntentParser {
             return Understanding.Save(saveBody(raw), MemoryKind.OBJECT_LOCATION, ol.subjectKey, ol)
         }
         val content = ObjectLocation.stripLeadIn(text)
+        // A few words with no verb ("facebook password", "passport", "wifi code") is someone looking something
+        // up, not saving it: a note always says something about the thing.
+        if (content == text && looksLikeLookup(text)) return Understanding.Ask(text, QuestionType.GENERAL, null)
         if (content.split(' ').size < 2) return Understanding.Unclear(raw)
         return Understanding.Save(saveBody(raw), MemoryKind.NOTE, null, null)
+    }
+
+    private val VERBISH = Regex("\\b(?:is|are|am|was|were|be|been|has|have|had|do|does|did|will|can|put|kept|left|in|on|at|under|inside|behind|to|from|for|with|and|because|that|then|i|we|he|she|they|it)\\b")
+
+    /** Up to three words and nothing that makes it a statement ("dad likes tea" has a verb in the middle). */
+    private fun looksLikeLookup(text: String): Boolean {
+        val words = text.split(' ').filter { it.isNotBlank() }
+        if (words.size !in 1..3 || VERBISH.containsMatchIn(text)) return false
+        if (words.any { Regex("(?:ed|ing)$").containsMatchIn(it) && it.length > 4 }) return false
+        if (words.size == 3 && words[1].endsWith("s") && !words[1].endsWith("ss")) return false
+        return true
     }
 
     /** "take my meds" / "took the meds" -> "take med"; "locked the front door" -> "lock front door". */
@@ -158,6 +199,12 @@ object IntentParser {
         val originals = raw.split(Regex("[^\\p{L}\\p{N}'-]+")).filter { it.any(Char::isUpperCase) }.associateBy { it.lowercase() }
         return lower.split(' ').joinToString(" ") { originals[it] ?: it }
     }
+
+    private val FILLER = setOf("my", "the", "a", "an", "our", "to", "please", "that", "i", "is", "are", "am", "at", "in", "on", "of", "and", "remember", "note", "save", "kataa", "okay", "ok")
+
+    /** Same words in any order, ignoring filler and plurals: "Call my mom" == "call mom" == "Call mom." */
+    fun sameKey(text: String): String =
+        Text.normalize(text).split(Regex("[^a-z0-9]+")).filter { it.isNotBlank() && it !in FILLER }.map(Text::singular).sorted().joinToString(" ")
 
     fun isHomeWord(name: String) = Text.stripDeterminers(name) in HOME_WORDS
 

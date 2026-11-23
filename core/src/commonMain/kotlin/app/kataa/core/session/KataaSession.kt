@@ -58,6 +58,8 @@ class KataaSession(
     private val speech: SpeechEngine?,
     private val context: () -> AssistantContext,
     private val runOnCore: (() -> Unit) -> Unit,
+    /** Waits for an accurate location; used when a request needs one and the cached fix was too old. */
+    private val freshLocation: (() -> app.kataa.core.model.GeoPoint?)? = null,
 ) {
     private val _state = MutableStateFlow<KataaState>(KataaState.Idle)
     val state: StateFlow<KataaState> = _state.asStateFlow()
@@ -94,6 +96,22 @@ class KataaSession(
         if (text.isNotBlank()) submit(text.trim(), voice = false)
     }
 
+    /** "Save it instead" after a search found nothing: stores [text] as a note. */
+    fun saveInstead(text: String) {
+        if (text.isBlank()) return
+        _state.value = KataaState.Thinking(text)
+        runOnCore {
+            try {
+                val c = core()
+                awaiting = null
+                _state.value = KataaState.Done(text, c.assistant.saveAsNote(text, context()))
+                runCatching { c.processPending() }
+            } catch (t: Throwable) {
+                _state.value = KataaState.Failed(SpeechError.OTHER)
+            }
+        }
+    }
+
     /** Back to the resting orb (after the result card is dismissed). */
     fun dismiss() {
         if (_state.value is KataaState.Done || _state.value is KataaState.Failed) _state.value = KataaState.Idle
@@ -116,7 +134,11 @@ class KataaSession(
             val c = core()
             val ctx = context().let { if (voice) it.copy(source = app.kataa.core.model.Source.VOICE) else it.copy(source = app.kataa.core.model.Source.TEXT) }
             val previous = awaiting
-            val reply = if (previous != null) c.assistant.followUp(previous, text, ctx) else c.assistant.handle(text, ctx)
+            var reply = if (previous != null) c.assistant.followUp(previous, text, ctx) else c.assistant.handle(text, ctx)
+            if (reply == Reply.NeedsLocation) {
+                // "this is Big Mart" with no recent fix: get one now and try again.
+                freshLocation?.invoke()?.let { loc -> reply = c.assistant.handle(text, ctx.copy(location = loc)) }
+            }
             awaiting = reply.takeIf { it is Reply.NeedsTime || it is Reply.NeedsPlace || it is Reply.NeedsLocation }
             _state.value = KataaState.Done(text, reply)
             // Embedding and categories happen after the answer is on screen; a failure there must not

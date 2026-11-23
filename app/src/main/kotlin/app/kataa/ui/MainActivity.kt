@@ -106,6 +106,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var objView: ImageView
     private lateinit var bigText: TextView
     private lateinit var metaText: TextView
+    private lateinit var saveIt: LinearLayout
+    private var notFoundText: String? = null
 
     private var scene = Scene.HOME
     private var lastState: KataaState? = null
@@ -260,6 +262,18 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
             addView(bigText); addView(metaText, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dpi(10f) })
         }, FracLayout.Spec(0.6f, 0.88f))
+        saveIt = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = ui.glass(); setPadding(ui.dpi(20f), ui.dpi(12f), ui.dpi(20f), ui.dpi(12f))
+            addView(ui.text(15.5f, 700).apply { text = "Save it instead" })
+            visibility = View.GONE
+            setOnClickListener {
+                val t = notFoundText ?: return@setOnClickListener
+                main.removeCallbacks(autoClose); visibility = View.GONE; session.saveInstead(t)
+            }
+        }
+        ui.pressable(saveIt)
+        answer.add(saveIt, FracLayout.Spec(0.84f, 0.9f, wrap = true))
         answer.setOnClickListener { session.dismiss() }
 
         listLayer = FrameLayout(this)
@@ -429,7 +443,14 @@ class MainActivity : ComponentActivity() {
             is Reply.Answer -> showAnswer(heard, r.memory, r.shortAnswer)
             is Reply.DidIAnswer -> showDidI(heard, r)
             is Reply.Saved -> done("Saved", r.memory.body, offerPhoto = r.memory.takeIf { it.kind == MemoryKind.OBJECT_LOCATION })
-            is Reply.ReminderSet -> done("Reminder set", "${r.memory.body}. ${r.description}.")
+            is Reply.AlreadySaved -> done("Already saved", r.memory.body)
+            is Reply.Replaced -> done("Updated", r.memory.body)
+            is Reply.NeedsTime, is Reply.NeedsPlace -> {
+                // Kataa asked a question: listen for the answer without another tap.
+                showMessage(ReplyText.of(r), keepOpen = true)
+                main.postDelayed({ if (lastState is KataaState.Done && scene == Scene.TALK) startTalking() }, if (Look.speakReplies(this)) 2600L else 1200L)
+            }
+            is Reply.ReminderSet -> done("Reminder set", "${r.memory.body}. ${r.description}." + (r.hint?.let { "\n$it" } ?: ""))
             is Reply.PlaceSaved -> done("Place saved", ReplyText.of(r))
             is Reply.Corrected -> done("Fixed", r.after.body)
             is Reply.Undone -> done("Deleted", r.memory.body)
@@ -496,6 +517,9 @@ class MainActivity : ComponentActivity() {
         bigText.text = "Not saved yet"
         metaText.text = "Tell me when you put it somewhere, and I'll remember"
         setObject(null, ObjectIcons.notFound)
+        notFoundText = heard
+        saveIt.visibility = View.VISIBLE; saveIt.alpha = 0f; saveIt.translationY = ui.dp(10f)
+        saveIt.animate().alpha(1f).translationY(0f).setStartDelay(900).setDuration(600).setInterpolator(Motion.spring).start()
     }
 
     private fun prepareAnswer(heard: String) {
@@ -504,6 +528,7 @@ class MainActivity : ComponentActivity() {
         q.append("“").append(heard).append("”")
         q.setSpan(ForegroundColorSpan(look.fg), startQ, q.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         asked.text = q
+        saveIt.visibility = View.GONE; notFoundText = null
         objView.setImageDrawable(null)
         go(Scene.ANSWER)
         main.postDelayed(autoClose, 14_000)

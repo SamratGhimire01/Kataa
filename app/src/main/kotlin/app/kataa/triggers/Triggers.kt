@@ -87,6 +87,25 @@ object Triggers {
                 context.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED)
 
     @SuppressLint("MissingPermission")
+    private fun hasLocation(context: Context) =
+        context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    /** The phone's last known fix if it is recent (no waiting). Call off the main thread. */
+    @SuppressLint("MissingPermission")
+    fun recentLocation(context: Context, maxAgeMs: Long = 3 * 60_000L): Location? = if (!hasLocation(context)) null else runCatching {
+        val l = com.google.android.gms.tasks.Tasks.await(LocationServices.getFusedLocationProviderClient(context).lastLocation, 800, java.util.concurrent.TimeUnit.MILLISECONDS)
+        l?.takeIf { System.currentTimeMillis() - it.time <= maxAgeMs }
+    }.getOrNull()
+
+    /** A fresh, accurate fix ("this is Big Mart", "I parked here"); waits up to a few seconds. Call off the main thread. */
+    @SuppressLint("MissingPermission")
+    fun currentLocation(context: Context): Location? = if (!hasLocation(context)) null else runCatching {
+        val client = LocationServices.getFusedLocationProviderClient(context)
+        com.google.android.gms.tasks.Tasks.await(client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null), 8, java.util.concurrent.TimeUnit.SECONDS)
+            ?: com.google.android.gms.tasks.Tasks.await(client.lastLocation, 2, java.util.concurrent.TimeUnit.SECONDS)
+    }.getOrNull()
+
     private fun lastLocation(context: Context): Location? = runCatching {
         val client = LocationServices.getFusedLocationProviderClient(context)
         val task = client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)

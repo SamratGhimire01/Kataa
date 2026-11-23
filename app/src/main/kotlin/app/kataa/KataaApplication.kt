@@ -2,6 +2,7 @@ package app.kataa
 
 import android.app.Application
 import app.kataa.core.assistant.AssistantContext
+import app.kataa.core.model.GeoPoint
 import app.kataa.core.assistant.Reply
 import app.kataa.core.session.KataaSession
 import app.kataa.core.session.KataaState
@@ -26,8 +27,10 @@ class KataaApplication : Application() {
             speech = AndroidSpeechEngine.createOrNull(this),
             context = {
                 val now = System.currentTimeMillis()
-                AssistantContext(now, TimeZone.currentSystemDefault(), privateUnlocked = now < privateUnlockedUntil)
+                val loc = Triggers.recentLocation(this)?.let { GeoPoint(it.latitude, it.longitude, it.accuracy.toDouble()) }
+                AssistantContext(now, TimeZone.currentSystemDefault(), location = loc, privateUnlocked = now < privateUnlockedUntil)
             },
+            freshLocation = { Triggers.currentLocation(this)?.let { GeoPoint(it.latitude, it.longitude, it.accuracy.toDouble()) } },
             runOnCore = { block ->
                 cores.worker.execute {
                     block()

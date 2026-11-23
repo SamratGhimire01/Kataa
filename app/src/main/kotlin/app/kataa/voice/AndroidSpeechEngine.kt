@@ -28,13 +28,13 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
 
     /** One way of listening. Tried in order until one works; the one that worked is tried first next time. */
     private enum class Way { ON_DEVICE, SERVICE_OFFLINE, SERVICE_ONLINE, SYSTEM_DEFAULT }
-    private var plan: List<Way> = emptyList()
+    private data class Attempt(val way: Way, val lang: String)
+    private var plan: List<Attempt> = emptyList()
     private var step = 0
-    private var heardSomething = false
-    @Volatile private var preferred: Way? = null
+    @Volatile private var preferred: Attempt? = null
 
     override fun start(listener: SpeechEngine.Listener) = main.post {
-        plan = ways()
+        plan = attempts()
         step = 0
         next(listener)
     }.let { }
@@ -43,26 +43,29 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
 
     override fun cancel() = main.post { recognizer?.cancel() }.let { }
 
-    private fun ways(): List<Way> {
+    private fun attempts(): List<Attempt> {
+        val langs = languages()
         val all = buildList {
-            if (onDeviceAvailable()) add(Way.ON_DEVICE)
-            if (realRecognizer(context) != null) { add(Way.SERVICE_OFFLINE); add(Way.SERVICE_ONLINE) }
-            add(Way.SYSTEM_DEFAULT)
+            if (onDeviceAvailable()) langs.forEach { add(Attempt(Way.ON_DEVICE, it)) }
+            if (realRecognizer(context) != null) {
+                add(Attempt(Way.SERVICE_OFFLINE, langs.first()))
+                langs.forEach { add(Attempt(Way.SERVICE_ONLINE, it)) }
+            }
+            langs.forEach { add(Attempt(Way.SYSTEM_DEFAULT, it)) }
         }
         val p = preferred
         return if (p != null && p in all) listOf(p) + (all - p) else all
     }
 
-    /** Starts the next way in the plan, or reports that this phone can't listen in-app. */
+    /** Starts the next attempt in the plan, or reports that this phone can't listen in-app. */
     private fun next(listener: SpeechEngine.Listener) {
         recognizer?.destroy(); recognizer = null
         while (step < plan.size) {
-            val way = plan[step++]
-            val r = runCatching { create(way) }.getOrNull() ?: continue
-            heardSomething = false
+            val a = plan[step++]
+            val r = runCatching { create(a.way) }.getOrNull() ?: continue
             recognizer = r
-            r.setRecognitionListener(Bridge(listener, way))
-            val ok = runCatching { r.startListening(intent(offline = way != Way.SERVICE_ONLINE && way != Way.SYSTEM_DEFAULT)) }.isSuccess
+            r.setRecognitionListener(Bridge(listener, a))
+            val ok = runCatching { r.startListening(intent(a)) }.isSuccess
             if (ok) return
             r.destroy(); recognizer = null
         }
@@ -77,67 +80,113 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
         Way.SYSTEM_DEFAULT -> if (SpeechRecognizer.isRecognitionAvailable(context)) SpeechRecognizer.createSpeechRecognizer(context) else null
     }
 
-    private fun intent(offline: Boolean) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+    private fun intent(a: Attempt) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, englishTag())
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, a.lang)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, a.lang)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, offline)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, a.way == Way.ON_DEVICE || a.way == Way.SERVICE_OFFLINE)
+        // Several guesses, so the one that makes sense ("call mom", not "call more") can win.
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        if (Build.VERSION.SDK_INT >= 33) putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(BIAS))
         // People pause mid-thought ("remind me to... uh... call mom"): allow a slightly longer pause.
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
     }
 
-    private inner class Bridge(private val l: SpeechEngine.Listener, private val way: Way) : RecognitionListener {
+    private inner class Bridge(private val l: SpeechEngine.Listener, private val a: Attempt) : RecognitionListener {
         private var finished = false
+        private var ready = false
+        private var heard = false
+        private val startedAt = android.os.SystemClock.elapsedRealtime()
         override fun onRmsChanged(rmsdB: Float) = l.onLevel(((rmsdB + 2f) / 12f).coerceIn(0f, 1f))
         override fun onPartialResults(partialResults: Bundle?) {
-            first(partialResults)?.let { heardSomething = true; l.onPartial(it) }
+            all(partialResults).firstOrNull()?.let { heard = true; l.onPartial(it) }
         }
         override fun onResults(results: Bundle?) {
             if (finished) return
             finished = true
-            preferred = way
-            l.onFinal(first(results).orEmpty())
+            preferred = a
+            l.onFinal(best(all(results)))
         }
         override fun onError(error: Int) {
             if (finished) return
             finished = true
             lastErrorCode = error
-            when (error) {
-                SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                    preferred = way
+            val instant = !ready || android.os.SystemClock.elapsedRealtime() - startedAt < 700
+            when {
+                // A real "you said nothing": the recognizer was listening and heard nothing.
+                (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) && !instant -> {
+                    preferred = a
                     l.onError(SpeechError.NO_SPEECH)
                 }
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> l.onError(SpeechError.NO_PERMISSION)
+                error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> l.onError(SpeechError.NO_PERMISSION)
+                // Something broke after the user already spoke (network dropped): don't make them wait on more tries.
+                heard -> l.onError(SpeechError.OTHER)
                 else -> {
-                    // This way can't listen right now (model not downloaded, no network, recognizer busy or
-                    // broken): ask for the offline English model if we can, then try the next way.
-                    if (way == Way.ON_DEVICE && Build.VERSION.SDK_INT >= 33) {
-                        runCatching { recognizer?.triggerModelDownload(intent(offline = true)) }
+                    // This attempt can't listen (language or offline pack missing, recognizer busy or broken, or it
+                    // gave up before listening): ask for the offline English pack if we can, then try the next one.
+                    if (a.way == Way.ON_DEVICE && Build.VERSION.SDK_INT >= 33) {
+                        runCatching { recognizer?.triggerModelDownload(intent(a)) }
                     }
-                    if (preferred == way) preferred = null
-                    main.post { next(l) }
+                    if (preferred == a) preferred = null
+                    main.postDelayed({ next(l) }, if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 250L else 0L)
                 }
             }
         }
-        override fun onReadyForSpeech(params: Bundle?) = Unit
+        override fun onReadyForSpeech(params: Bundle?) { ready = true }
         override fun onBeginningOfSpeech() = Unit
         override fun onBufferReceived(buffer: ByteArray?) = Unit
         override fun onEndOfSpeech() = Unit
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
-        private fun first(b: Bundle?) = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+        private fun all(b: Bundle?) = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().map { it.trim() }.filter { it.isNotEmpty() }
     }
 
     private fun onDeviceAvailable() = Build.VERSION.SDK_INT >= 33 && runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }.getOrDefault(false)
 
-    private fun englishTag(): String {
-        val l = Locale.getDefault()
-        return if (l.language == "en") l.toLanguageTag() else "en-US"
-    }
+    /**
+     * English variants to try, best first. Recognizers don't all know "English (Nepal)": South Asian English
+     * maps to Indian English, which also understands the accent best; US English is the last resort.
+     */
+    private fun languages(): List<String> = englishVariants(Locale.getDefault())
 
     companion object {
+        private val SOUTH_ASIA = setOf("NP", "IN", "BD", "LK", "PK", "BT", "MV")
+
+        internal fun englishVariants(l: Locale): List<String> {
+            val first = when {
+                l.language == "en" && l.country in SOUTH_ASIA -> "en-IN"
+                l.language == "en" && l.country.isNotEmpty() -> l.toLanguageTag()
+                l.language in setOf("ne", "hi", "bn", "si", "ur", "ta", "te", "mr", "gu", "kn", "ml", "pa") -> "en-IN"
+                else -> "en-US"
+            }
+            return listOf(first, "en-IN", "en-US").distinct()
+        }
+
+        /** Words people say to Kataa; recognizers lean toward them when unsure. */
+        private val BIAS = listOf(
+            "remind me", "where are my", "where is my", "mom", "dad", "password", "passport", "keys", "wallet",
+            "charger", "medicine", "Big Mart", "Bhatbhateni", "Kataa", "undo", "this is", "parked",
+        )
+
+        /** Words that make a guess more likely to be what was meant. */
+        private val LIKELY = setOf(
+            "mom", "mum", "dad", "mother", "father", "sister", "brother", "wife", "husband", "remind", "where", "my",
+            "password", "keys", "key", "wallet", "phone", "charger", "medicine", "meds", "milk", "buy", "call", "pay",
+            "tomorrow", "today", "tonight", "morning", "evening", "pm", "am", "home", "office", "car", "bike", "parked",
+            "drawer", "bag", "table", "room", "kitchen", "bed", "is", "are", "in", "on", "under",
+        )
+
+        /** Picks the recognizer's best guess, unless a close alternative is made of much more likely words. */
+        internal fun best(guesses: List<String>): String {
+            if (guesses.isEmpty()) return ""
+            fun score(g: String) = g.lowercase().split(Regex("[^a-z']+")).count { it in LIKELY }
+            val top = guesses.first()
+            val alt = guesses.drop(1).take(3).filter { it.split(' ').size == top.split(' ').size }.maxByOrNull(::score)
+            return if (alt != null && score(alt) > score(top)) alt else top
+        }
+
         /** The last raw SpeechRecognizer error code, shown in the "couldn't catch that" message. */
         @Volatile var lastErrorCode: Int = 0
             private set
@@ -145,15 +194,15 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
         /** The phone's own voice typing screen, used when in-app listening isn't possible. */
         fun voiceTypingIntent(context: Context) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            val l = Locale.getDefault()
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (l.language == "en") l.toLanguageTag() else "en-US")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, englishVariants(Locale.getDefault()).first())
             putExtra(RecognizerIntent.EXTRA_PROMPT, "What should I remember?")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
         }.takeIf { it.resolveActivity(context.packageManager) != null }
 
         /** The recognized text from [voiceTypingIntent]'s result. */
         fun voiceTypingResult(data: Intent?): String? =
-            data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+            data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS).orEmpty().map { it.trim() }.filter { it.isNotEmpty() }
+                .let { best(it) }.takeIf { it.isNotEmpty() }
 
         /**
          * Always returns an engine: which recognizers exist is checked each time listening starts (a voice

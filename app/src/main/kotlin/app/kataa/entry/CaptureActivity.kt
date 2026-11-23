@@ -154,6 +154,8 @@ class CaptureActivity : ComponentActivity() {
         val text = ReplyText.of(s.reply)
         val word = when (s.reply) {
             is Reply.Saved -> "Saved"
+            is Reply.AlreadySaved -> "Already saved"
+            is Reply.Replaced -> "Updated"
             is Reply.ReminderSet -> "Reminder set"
             is Reply.PlaceSaved -> "Place saved"
             is Reply.Corrected -> "Fixed"

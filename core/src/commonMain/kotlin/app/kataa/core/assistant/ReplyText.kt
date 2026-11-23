@@ -4,7 +4,9 @@ package app.kataa.core.assistant
 object ReplyText {
     fun of(r: Reply): String = when (r) {
         is Reply.Saved -> "Got it."
-        is Reply.ReminderSet -> "I'll remind you. ${r.description}."
+        is Reply.AlreadySaved -> "Already saved: ${r.memory.body}"
+        is Reply.Replaced -> "Updated. I replaced the old one."
+        is Reply.ReminderSet -> "I'll remind you. ${r.description}." + (r.hint?.let { " $it" } ?: "")
         is Reply.NeedsTime -> "When should I remind you?"
         is Reply.NeedsPlace -> "Where is ${r.placeName}? Say \"save this place as ${r.placeName}\" when you're there, or tell me a time instead."
         Reply.NeedsLocation -> "I need your location for that."
