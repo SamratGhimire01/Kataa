@@ -4,7 +4,8 @@ Offline, voice-first memory app ("Kataa" = "where" in Nepali). Android first (Pl
 Plan, decisions and phases: `docs/BLUEPRINT.md`. User research: `docs/RESEARCH_forgetting_pain_points.md`.
 
 ## Layout
-- `core/`: Kotlin Multiplatform shared core (database, search, categories, reminders, backup). `commonMain` must stay
+- `core/`: Kotlin Multiplatform shared core (database, search, categories, reminders, backup, and the rule-based
+  understanding layer: `nlu/` parses what the user says, `assistant/Assistant.handle()` acts on it). `commonMain` must stay
   free of JVM/Android APIs so the iOS port is a build change. `jvmMain` has the JDBC driver used by tests.
 - Android app and native SQLite build (SQLCipher + FTS5 + R*Tree + sqlite-vec): Phase 1b, not yet present.
 
