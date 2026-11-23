@@ -109,28 +109,63 @@ class Assistant(private val core: KataaCore) {
             NewMemory(u.body, MemoryKind.REMINDER, ctx.source, rawTranscript = raw.takeIf { ctx.source == Source.VOICE }),
         )
         setLast(memory.id)
+        return schedule(memory, u.time, u.moment, u.persistent, ctx)
+    }
+
+    /**
+     * Answers Kataa's own follow-up question. After [Reply.NeedsTime] ("When should I remind you?") the user
+     * says "tomorrow at 5" or "when I get home"; after [Reply.NeedsPlace] they can name a time instead.
+     * Anything that is not an answer is handled as a new request.
+     */
+    fun followUp(previous: Reply, raw: String, ctx: AssistantContext): Reply {
+        val memory = when (previous) {
+            is Reply.NeedsTime -> previous.memory
+            is Reply.NeedsPlace -> previous.memory
+            Reply.NeedsLocation -> null
+            else -> null
+        }
+        if (memory != null && core.memories.get(memory.id)?.deletedAt == null) {
+            val text = Text.normalize(raw)
+            val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
+            val time = TimeParser.parse(text, ctx.nowMs, ctx.timeZone)
+            val moment = PlaceParser.parse(text, known) ?: if (time == null) bareMoment(text) else null
+            if (time != null || moment != null) return schedule(memory, time, moment, persistent = false, ctx)
+        }
+        return handle(raw, ctx)
+    }
+
+    /** "home", "at big mart", "any pharmacy" said on their own as an answer to "when?". */
+    private fun bareMoment(text: String): MomentMatch? {
+        val name = text.removePrefix("at ").removePrefix("in ").trim()
+        if (name.isEmpty() || name.split(' ').size > 4) return null
+        val kind = PlaceParser.typeOf(name.removePrefix("any ").trim())
+        val ref = if (kind != null) PlaceRef.Kind(kind, name) else PlaceRef.Named(name)
+        return MomentMatch.Place(ref, onExit = false, 0 until text.length)
+    }
+
+    private fun schedule(memory: Memory, time: app.kataa.core.nlu.TimeMatch?, moment: MomentMatch?, persistent: Boolean, ctx: AssistantContext): Reply {
         val created = mutableListOf<Reminder>()
         val parts = mutableListOf<String>()
-
-        u.time?.let { t ->
-            created += core.reminders.addTime(memory.id, t.fireAt.toEpochMilliseconds(), ctx.timeZone.id, t.rrule, u.persistent)
+        time?.let { t ->
+            created += core.reminders.addTime(memory.id, t.fireAt.toEpochMilliseconds(), ctx.timeZone.id, t.rrule, persistent)
             parts += Describe.time(t.fireAt, t.rrule, ctx)
         }
-        when (val mo = u.moment) {
+        when (moment) {
             is MomentMatch.Bluetooth -> {
-                created += core.reminders.addBluetooth(memory.id, mo.deviceAlias, mo.onDisconnect, u.persistent)
-                parts += if (mo.onDisconnect) "when you get out of the ${mo.deviceAlias}" else "when you get in the ${mo.deviceAlias}".replace("get in the earbuds", "put on your earbuds").replace("get in the headphones", "put on your headphones")
-            }
-            is MomentMatch.Place -> {
-                val target = resolvePlace(mo.ref, ctx)
-                when (target) {
-                    is Resolved.Target -> {
-                        created += core.reminders.addPlace(memory.id, target.target, onExit = mo.onExit, persistent = u.persistent)
-                        parts += (if (mo.onExit) "when you leave " else "when you arrive at ") + target.spoken
-                    }
-                    is Resolved.Unknown -> return Reply.NeedsPlace(memory, target.name)
-                    Resolved.NoLocation -> return Reply.NeedsLocation
+                created += core.reminders.addBluetooth(memory.id, moment.deviceAlias, moment.onDisconnect, persistent)
+                parts += when {
+                    moment.onDisconnect -> "when you get out of the ${moment.deviceAlias}"
+                    moment.deviceAlias in setOf("earbuds", "headphones") -> "when you put on your ${moment.deviceAlias}"
+                    else -> "when you get in the ${moment.deviceAlias}"
                 }
+            }
+            is MomentMatch.Place -> when (val target = resolvePlace(moment.ref, ctx)) {
+                is Resolved.Target -> {
+                    created += core.reminders.addPlace(memory.id, target.target, onExit = moment.onExit, persistent = persistent)
+                    parts += (if (moment.onExit) "when you leave " else "when you arrive at ") + target.spoken
+                }
+                is Resolved.Unknown -> return Reply.NeedsPlace(memory, target.name)
+                Resolved.NoLocation -> return Reply.NeedsLocation
             }
             null -> Unit
         }

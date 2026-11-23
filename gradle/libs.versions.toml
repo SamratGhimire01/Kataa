@@ -1,4 +1,5 @@
 [versions]
+coroutines = "1.11.0"
 agp = "9.5.2"
 androidx-core = "1.19.1"
 androidx-activity = "1.13.0"
@@ -9,6 +10,8 @@ datetime = "0.8.0"
 sqlite-jdbc = "3.54.1.0"
 
 [libraries]
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "datetime" }
 onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }

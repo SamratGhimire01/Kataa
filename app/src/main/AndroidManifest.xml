@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Asked the first time the user taps to talk. Audio never leaves the phone. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Android 11+ package visibility: find the phone's speech recognizer and text-to-speech engine. -->
+    <queries>
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+        <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
+    </queries>
+
     <!--
-      No permissions yet. Location, notifications, exact alarms and Bluetooth arrive with the
-      reminder engine, each requested only when the user first needs it.
       allowBackup is off: the database is encrypted with a key that never leaves this phone's
       Keystore, so a cloud restore could not open it. Kataa's own backup export handles that.
     -->
