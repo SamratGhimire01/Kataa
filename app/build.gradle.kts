@@ -59,6 +59,8 @@ dependencies {
     implementation(libs.onnxruntime.android)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.play.services.location)
+    // Text recognition model is delivered by Google Play services, not bundled: keeps the APK small.
+    implementation(libs.mlkit.text.recognition)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity)
 }

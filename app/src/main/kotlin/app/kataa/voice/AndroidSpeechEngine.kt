@@ -1,6 +1,8 @@
 package app.kataa.voice
 
+import android.content.ComponentName
 import android.content.Context
+import android.speech.RecognitionService
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -38,8 +40,13 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
     private fun begin(listener: SpeechEngine.Listener, onDevice: Boolean) {
         recognizer?.destroy()
         usingOnDevice = onDevice
-        val r = if (onDevice && Build.VERSION.SDK_INT >= 33) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        else SpeechRecognizer.createSpeechRecognizer(context)
+        val r = when {
+            onDevice && Build.VERSION.SDK_INT >= 33 -> SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+            // Never the system default blindly: once Kataa is the phone's assistant, the default points at
+            // Kataa's own placeholder service. Use a real recognizer from another app.
+            else -> realRecognizer(context)?.let { SpeechRecognizer.createSpeechRecognizer(context, it) }
+                ?: SpeechRecognizer.createSpeechRecognizer(context)
+        }
         recognizer = r
         r.setRecognitionListener(Bridge(listener))
         r.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -96,8 +103,18 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
         /** Null when the phone has no speech recognizer at all (the UI then offers typing). */
         fun createOrNull(context: Context): AndroidSpeechEngine? {
             val c = context.applicationContext
-            val any = SpeechRecognizer.isRecognitionAvailable(c) || (Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(c))
+            val any = realRecognizer(c) != null || (Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(c))
             return if (any) AndroidSpeechEngine(c) else null
+        }
+
+        private val PREFERRED = listOf("com.google.android.as", "com.google.android.googlequicksearchbox", "com.google.android.tts")
+
+        /** Installed recognition services other than Kataa's own, Google's first. */
+        fun realRecognizer(context: Context): ComponentName? {
+            val services = context.packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
+                .map { it.serviceInfo }.filter { it.packageName != context.packageName }
+            val pick = services.minByOrNull { PREFERRED.indexOf(it.packageName).let { i -> if (i < 0) PREFERRED.size else i } }
+            return pick?.let { ComponentName(it.packageName, it.name) }
         }
     }
 }

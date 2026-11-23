@@ -1,4 +1,5 @@
 [versions]
+mlkit-text = "19.0.2"
 play-location = "21.4.0"
 coroutines = "1.11.0"
 agp = "9.5.2"
@@ -11,6 +12,7 @@ datetime = "0.8.0"
 sqlite-jdbc = "3.54.1.0"
 
 [libraries]
+mlkit-text-recognition = { module = "com.google.android.gms:play-services-mlkit-text-recognition", version.ref = "mlkit-text" }
 play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "play-location" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
