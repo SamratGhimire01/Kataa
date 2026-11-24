@@ -23,11 +23,11 @@ object ListParser {
     private val NOT_ITEMS = Regex("^(?:is|are|was|were) (?:on|in|at|under|inside|behind|near|with|by|kept|stored|written|saved|full|long|empty|too|very|so|not|getting|piling|done|finished|over|lost|missing|gone)\\b|^(?:of|about|that|which|for|from|with|i|we|you|it)\\b|^(?:is|are) [a-z]+(?:ing|ed)\\b")
     private val OWNER = Regex("^(?:(?:my|the|a|an|our|new|this)(?: |$))+")
 
-    private val ADD = Regex("^(?:please )?(?:can you |could you )?(?:also )?(?:add|put|include|append)(?: down)? (.+?) (?:to|on|in|into|onto) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
+    private val ADD = Regex("^(?:please )?(?:can you |could you )?(?:also )?(?:add|put|include|append|write|note|jot)(?: down)? (.+?) (?:to|on|in|into|onto) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
     private val REMOVE = Regex("^(?:please )?(?:remove|delete|take off|cross out|drop|erase) (.+?) (?:from|off|on|in) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
 
     private val COUNT = Regex("^how many (?:of my )?(?:tasks|things|items|to-?dos|to dos|todos|goals|jobs)\\b.*$")
-    private val LEFT = Regex("^(?:what|which)(?: tasks| things| items| goals)? (?:is|are) (?:still )?(?:left|remaining|pending|not done|undone)(?: to do)?$LEFT_TAIL|^what (?:else )?(?:is|do i have) (?:still )?left(?: to do)?$LEFT_TAIL")
+    private val LEFT = Regex("^(?:what|which)(?: tasks| things| items| goals)? (?:is|are) (?:still )?(?:left|remaining|pending|not done|undone)(?: to do)?$LEFT_TAIL|^what (?:else )?(?:is|do i have|do i still have|have i got|is there) (?:still )?left(?: to do)?$LEFT_TAIL")
     private const val LEFT_TAIL = "(?: (?:for |on |in )?(?:today|tonight|tomorrow|this month|this week))?(?: (?:on|in|from) (?:my |the )?(?:[a-z]+ )?(?:to-?do list|to do list|todo list|list|tasks|goals))?(?: (?:for )?(?:today|tomorrow|this month))?$"
     private val CHEAPEST = Regex("\\b(?:cheapest|least (?:costly|expensive|cost|money)|lowest cost|cost of the (?:least|smallest|cheapest|lowest)|smallest cost|least task)\\b")
     private val QUICKEST = Regex("\\b(?:quickest|shortest|fastest|easiest|smallest|least time)\\b")
@@ -35,18 +35,21 @@ object ListParser {
     private val TOTAL_TIME = Regex("^how (?:long|much time) (?:will|would|does|do|is)\\b")
     private val TASKISH = Regex("\\b(?:tasks?|to-?dos|to dos|todos|to-?do list|to do list|todo list|list|goals?|things to do|jobs)\\b")
 
+    /**
+     * (form, done, strictness). Strictness 0: a clear command ("tick buy milk"). 1: "done with ...", the item must be
+     * mostly named. 2: ordinary sentences too ("the rice is done", "I finished the milk" = it ran out): every word
+     * of the item must be said, and never a shopping-style list item.
+     */
     private val TICK = listOf(
-        Regex("^(?:please )?(?:mark|tick|check|cross|strike|set)(?: off| out)? (.+?)(?: as)? (done|complete|completed|finished|off|not done|undone|incomplete|not finished)$") to null,
-        Regex("^(?:please )?(?:tick|check|cross|strike) off (.+)$") to true,
-        Regex("^(?:please )?tick (.+)$") to true,
-        Regex("^(?:please )?(?:untick|uncheck|unmark|untick off) (.+)$") to false,
-        Regex("^(.+?) (?:is|are) not (?:done|completed)(?: yet)?$") to false,
-        Regex("^(.+?) (?:is|are) (?:done|completed|complete)$") to true,
-        Regex("^(?:i am |i have |i )?(?:just )?done with (.+)$") to true,
-        Regex("^(?:i )?(?:just |already |have )*(?:finished|completed) (.+)$") to true,
+        Triple(Regex("^(?:please )?(?:mark|tick|check|cross|strike|set)(?: off| out)? (.+?)(?: as)? (done|complete|completed|finished|off|not done|undone|incomplete|not finished)$"), null, 0),
+        Triple(Regex("^(?:please )?(?:tick|check|cross|strike) off (.+)$"), true, 0),
+        Triple(Regex("^(?:please )?tick (.+)$"), true, 0),
+        Triple(Regex("^(?:please )?(?:untick|uncheck|unmark|untick off) (.+)$"), false, 0),
+        Triple(Regex("^(.+?) (?:is|are) not (?:done|completed)(?: yet)?$"), false, 2),
+        Triple(Regex("^(.+?) (?:is|are) (?:done|completed|complete)$"), true, 2),
+        Triple(Regex("^(?:i am |i have |i )?(?:just )?done with (.+)$"), true, 1),
+        Triple(Regex("^(?:i )?(?:just |already |have )*(?:finished|completed) (.+)$"), true, 2),
     )
-    /** TICK forms that are ordinary sentences too ("the milk is done", "I finished the book"): the item must match closely. */
-    private const val LOOSE_FROM = 4
     private val LIST_TAIL = Regex("\\s+(?:from|on|in|of) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
 
     private val JOURNAL_START = listOf(
@@ -67,9 +70,12 @@ object ListParser {
     fun parse(text: String, raw: String, nowMs: Long, tz: TimeZone): Understanding? {
         val today = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date
         journal(text, raw, nowMs, tz, today)?.let { return it }
-        if (!TASKISH.containsMatchIn(text) && TICK.none { (r, _) -> r.matches(text) } && !LEFT.matches(text)) return null
+        if (!TASKISH.containsMatchIn(text) && TICK.none { it.first.matches(text) } && !LEFT.matches(text)) return null
 
         ADD.find(text)?.let { m ->
+            // "write it on the list", "note my tasks in my list": no item named.
+            val what = OWNER.replace(m.groupValues[1], "").trim()
+            if (what.isEmpty() || what in setOf("it", "this", "that", "them", "these", "those", "down", "something") || TD_WORD.containsMatchIn(what)) return@let
             val key = keyFrom(m.groupValues[2], m.groupValues[3], today, nowMs, tz, m.groupValues[0]) ?: return@let
             val items = app.kataa.core.lists.ListText.split(originalCase(m.groupValues[1], raw), nouns = key.startsWith("named:"))
             if (items.isNotEmpty()) return Understanding.AddToList(key, items)
@@ -78,7 +84,7 @@ object ListParser {
             return Understanding.RemoveFromList(keyFrom(m.groupValues[2], m.groupValues[3], today, nowMs, tz, m.groupValues[0]), m.groupValues[1])
         }
         question(text, today, nowMs, tz)?.let { return it }
-        for ((r, done) in TICK) {
+        for ((r, done, level) in TICK) {
             val m = r.find(text) ?: continue
             var query = m.groupValues[1].trim()
             var key: String? = null
@@ -87,7 +93,7 @@ object ListParser {
                 query = query.substring(0, t.range.first).trim()
             }
             val isDone = done ?: (m.groupValues[2] !in setOf("not done", "undone", "incomplete", "not finished"))
-            if (query.isNotEmpty()) return Understanding.Tick(key, query, isDone, strict = TICK.indexOfFirst { it.first == r } >= LOOSE_FROM)
+            if (query.isNotEmpty()) return Understanding.Tick(key, query, isDone, strict = level)
         }
         return openList(text, raw, today, nowMs, tz)
     }
@@ -120,7 +126,7 @@ object ListParser {
             // "today's list is on the fridge", "my tasks are piling up", "the list of documents for visa is ...",
             // "my goals for this year are written ...": sentences about a list, not items. Items need a listen verb,
             // a colon, or a real to-do list with its day ("tomorrow's to do list pick up the parcel").
-            val todoNoun = Regex("^(?:to-?do|to do|todo|task list|check ?list)").containsMatchIn(noun)
+            val todoNoun = Regex("^(?:to-?do|to do|todo|task list|tasks|goals|goal list|check ?list)").containsMatchIn(noun)
             val dated = !key.startsWith("named:") && (qualifier != null || before.isNotEmpty())
             if (show) return null
             if (!listen && !colon && !(todoNoun && dated)) return null
@@ -150,6 +156,10 @@ object ListParser {
             return qualifierKey(m.value, today, nowMs, tz, "list") ?: ListKey.day(today)
         }
         Regex("\\b(?:for|on|of) (.+?)(?:'s)?(?: list| to do list)?$").find(text)?.let { m -> qualifierKey(m.groupValues[1], today, nowMs, tz, "list", namedOk = false)?.let { return it } }
+        // "what's left on my shopping list": a list the user named.
+        Regex("\\b(?:on|in|from|of) (?:my |the |our )?([a-z]+(?: [a-z]+)?) (?:list|to-?do list|to do list)\\b").find(text)?.let { m ->
+            qualifierKey(m.groupValues[1], today, nowMs, tz, "list")?.let { return it }
+        }
         if (Regex("\\bgoals?\\b").containsMatchIn(text)) return defaultKey("goals", today)
         return ListKey.day(today)
     }
@@ -236,7 +246,7 @@ object ListParser {
     }
 
     private fun journal(text: String, raw: String, nowMs: Long, tz: TimeZone, today: LocalDate): Understanding? {
-        if (!Regex("\\b(?:journal|journaling|diary|what did i do|how was my day|how did my day go|what happened)\\b").containsMatchIn(text)) return null
+        if (!Regex("\\b(?:journal|journaling|diary|what did i do|what did i (?:write|say|note|record)|how was my day|how did my day go|what happened)\\b").containsMatchIn(text)) return null
         if (JOURNAL_START.any { it.matches(text) }) return Understanding.Journal(null)
         for (r in JOURNAL_SHOW) {
             val m = r.find(text) ?: continue
@@ -252,7 +262,7 @@ object ListParser {
         JOURNAL_INLINE.find(text)?.let { m ->
             val body = m.groupValues[1]
             // "diary is in my bag" is about the diary itself.
-            if (body.split(' ').size >= 4 && !Regex("^(?:my |the |a )?(?:diary|journal) (?:is|are|was|were|has|had)\\b").containsMatchIn(text)) return Understanding.Journal(originalCase(body, raw))
+            if (body.split(' ').size >= 4 && !Regex("^(?:my |the |a |today's |todays |today )?(?:diary|journal) (?:is|are|was|were|has|had|lies|sits|stays)\\b").containsMatchIn(text)) return Understanding.Journal(originalCase(body, raw))
         }
         return null
     }
@@ -260,6 +270,11 @@ object ListParser {
     /** [normalized] as the user wrote it in [raw] (keeps "Didi", "Big Mart"), when it can be found. */
     private fun originalCase(normalized: String, raw: String): String {
         val i = raw.indexOf(normalized, ignoreCase = true)
-        return if (i >= 0) raw.substring(i, i + normalized.length) else normalized
+        if (i >= 0) return raw.substring(i, i + normalized.length)
+        // Normalizing dropped the commas ("buy milk, call didi"); they separate items, so find the words with them.
+        val words = normalized.split(' ').filter { it.isNotEmpty() }
+        if (words.isEmpty()) return normalized
+        val loose = Regex(words.joinToString("[\\s,]+") { Regex.escape(it) }, RegexOption.IGNORE_CASE)
+        return loose.find(raw)?.value ?: normalized
     }
 }

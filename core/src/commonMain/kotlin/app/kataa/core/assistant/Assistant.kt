@@ -486,7 +486,7 @@ class Assistant(private val core: KataaCore) {
 
     /** "...and that's it", "okay stop", "done": the words that end a long dictation are not part of it. */
     private fun stripStopWords(s: String): String =
-        s.trim().replace(Regex("(?i)(?:^|[,.!\\s]+)(?:(?:okay|ok|and|so)\\s+)?(?:that's it|that is it|that's all|that is all|stop listening|save it|i'm done|i am done|okay done|ok done)[.!]*$"), "").trim()
+        s.trim().replace(Regex("(?i)(?:^|[,.!\\s]+)(?:(?:okay|ok|and|so)\\s+)?(?:that's it|that is it|that's all|that is all|stop listening|i'm done|i am done|okay done|ok done)[.!]*$"), "").trim()
 
     /**
      * The user said yes to a [Reply.ConfirmSecret], maybe after fixing the [value] or the [service] on the card.
@@ -510,7 +510,8 @@ class Assistant(private val core: KataaCore) {
         val thing = m.groupValues[2].trim()
         if (thing.isEmpty() || thing.split(' ').size > 5 || ASKABLE_SKIP.containsMatchIn(thing)) return Reply.NotFound(u.query)
         // Only something of yours ("my mom's birthday", "dad's phone number"), not "what happened at the meeting".
-        val ownMarker = Regex("(?:^| )(?:my|our) |'s ").containsMatchIn(u.query + " ")
+        // Recognizers often drop the "'s" ("when is didi birthday"), so a family word counts as yours too.
+        val ownMarker = Regex("(?:^| )(?:my|our) |'s ").containsMatchIn(u.query + " ") || RELATION.containsMatchIn(thing)
         if (!ownMarker) return Reply.NotFound(u.query)
         val yours = thing.replace(Regex("^(?:my|our)\\s+"), "your ").let { if (it.startsWith("your ")) it else "your $it" }
         return Reply.NotFound(u.query, yours, isWhen = m.groupValues[1] == "when")
@@ -945,6 +946,7 @@ class Assistant(private val core: KataaCore) {
         private val PICK_SECOND = Regex("^(?:the )?(?:second|2nd|other|last)(?: (?:one|1))?$")
         private val QUESTION_WORD = Regex("^(?:what|where|when|who|whom|which|how|why|did|do|does|is|are|can|could|show|find|tell|give|search)\\b")
         private val ASKABLE = Regex("^(what|when|which)(?: is| are| was|s)? (?:my |our |the )?(.+?)$")
+        private val RELATION = Regex("\\b(?:mom|mum|mother|mommy|mummy|dad|father|daddy|papa|mamu|mama|aama|baba|buwa|didi|dai|daju|bahini|bhai|sister|brother|wife|husband|son|daughter|uncle|aunt|aunty|auntie|grandma|grandpa|grandmother|grandfather|hajurba|hajuraama|boss|wife's|girlfriend|boyfriend|partner|cousin|nephew|niece|friend|best friend|kid|kids|baby|fiance|fiancee)\\b")
         private val ASKABLE_SKIP = Regex("\\b(?:time|today|tomorrow|weather|date today|day today|reminders?|tasks?|plans?)\\b|^(?:i |it |that |this |did |do |does |have |had |was |were |am |are )")
         private val YEARLY_THING = Regex("\\b(?:birthday|bday|anniversary|death anniversary|wedding day)\\b")
         private val REMIND_WORD = Regex("\\bremind\\b")

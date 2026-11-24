@@ -211,5 +211,66 @@ class ListsAndJournalTest {
         assertEquals(LocalDateTime(2026, 11, 25, 7, 0), kotlin.time.Instant.fromEpochMilliseconds(r.reminders.single().fireAt!!).let { kotlinx.datetime.TimeZone.of("Asia/Kathmandu").let { z -> it.toLocalDateTimeIn(z) } })
     }
 
+    /** Second bug-hunt pass. */
+    @Test fun reviewFindingsPass2() {
+        fun localOf(r: Reply.ReminderSet) = r.reminders.single().fireAt!!.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString() }
+        list(say("today's to do list: buy milk, call didi, pay rent, buy rice, pay electricity bill"))
+        // 1: "the second one".
+        assertEquals("Call didi", list(say("mark the second one done")).items.single().body)
+        assertEquals("Pay rent", list(say("tick the third one")).items.single().body)
+        // 2: write / note down on a named list.
+        assertEquals(ListKey.named("shopping"), list(say("write rice on my shopping list")).list.key)
+        assertEquals(ListKey.named("shopping"), list(say("note down sugar and eggs in my shopping list")).list.key)
+        // 3: ordinary sentences are not ticks.
+        assertTrue(say("the rice is done") !is Reply.TaskListReply)
+        assertTrue(say("i finished the milk") !is Reply.TaskListReply)
+        assertTrue(say("i finished the eggs") !is Reply.TaskListReply)
+        assertEquals("Pay electricity bill", list(say("i am done with the electricity bill")).items.single().body)
+        assertEquals("Buy rice", list(say("buy rice is done")).items.single().body)
+        // 4: "left on my shopping list".
+        val left = list(say("what's left on my shopping list"))
+        assertEquals(ListKey.named("shopping"), left.list.key)
+        // 5: tasks / goals for a day or month, inline.
+        assertEquals(ListKey.day(LocalDate(2026, 11, 25)), list(say("tomorrow's tasks buy a gift and book a cab")).list.key)
+        assertEquals(ListKey.month(2026, 11), list(say("this month's goals are save money and read five books")).list.key)
+        // 6.
+        assertEquals(ListAction.LEFT, list(say("what do i still have left to do")).action)
+        // 7: about the journal itself.
+        assertTrue(say("today's journal is in the drawer") !is Reply.JournalShown)
+        // 8: "save it" inside a sentence is kept.
+        assertIs<Reply.ListeningForJournal>(say("today's journal"))
+        val j = assertIs<Reply.JournalShown>(core.assistant.followUp(Reply.ListeningForJournal, "I found an old photo of grandma and decided to save it", ctx()))
+        assertTrue(j.saved!!.body.trimEnd('.').endsWith("save it"), j.saved!!.body)
+        // 9.
+        assertIs<Reply.JournalShown>(say("what did i write today"))
+        // 10: morning keeps AM.
+        assertEquals("2026-11-25T06:00", localOf(assertIs<Reply.ReminderSet>(say("remind me to call ram at 6 in the morning"))))
+        assertEquals("2026-11-25T06:30", localOf(assertIs<Reply.ReminderSet>(say("remind me to call hari at 6:30 in the morning"))))
+        // 11-13: not passwords.
+        for (s in listOf("change the wifi password tomorrow morning", "update my bank password this friday", "reset the router password after 3 days",
+            "write the password for the locker in the red notebook", "the wifi password is written on the router", "the wifi password is stuck on the fridge")) {
+            assertTrue(say(s) !is Reply.ConfirmSecret, s)
+        }
+        // 14: a service named with a verb.
+        assertEquals("Apple123", assertIs<Reply.ConfirmSecret>(say("find my iphone password is Apple123")).value)
+        // 15: "didi birthday" without the 's.
+        assertEquals("your didi birthday", assertIs<Reply.NotFound>(say("when is didi birthday")).askFor)
+    }
+
+    /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
+    @Test fun upgradesV2Journal() {
+        val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()
+        newCore(clock, path = path).use { c ->
+            c.db.execute("DROP TABLE journal_days")
+            c.db.execute("CREATE TABLE journal_days (day TEXT PRIMARY KEY, summary TEXT, summary_by_ai INTEGER NOT NULL DEFAULT 0, summarized_at INTEGER, changed_at INTEGER NOT NULL) WITHOUT ROWID")
+            c.db.execute("PRAGMA user_version = 2")
+        }
+        newCore(clock, path = path).use { c ->
+            assertIs<Reply.JournalShown>(c.assistant.followUp(Reply.ListeningForJournal, "A calm day at home with tea", ctx()))
+            assertEquals(1, c.journal.day(today).entries.size)
+        }
+        newCore(clock, path = path).use { c -> assertEquals(1, c.journal.day(today).entries.size) }
+    }
+
     private fun kotlin.time.Instant.toLocalDateTimeIn(z: TimeZone) = kotlinx.datetime.Instant.fromEpochMilliseconds(toEpochMilliseconds()).let { kotlinx.datetime.TimeZone.of(z.id); it }.let { i -> kotlinx.datetime.LocalDateTime.parse(java.time.Instant.ofEpochMilli(toEpochMilliseconds()).atZone(java.time.ZoneId.of(z.id)).toLocalDateTime().toString()) }
 }

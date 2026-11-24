@@ -111,7 +111,9 @@ object TimeParser {
             // "after 20 days at 2 pm": that day at that time; with no time, the same time as now.
             val clk = clock
             val t = clk ?: if (partOf(text) != null) LocalTime(partOf(text)!!, 0) else local.time
-            val adj = if (clk != null && clk.hour < 12 && !hasAmPm(text)) partOf(text)?.takeIf { it >= 12 }?.let { LocalTime(clk.hour + 12, clk.minute) } ?: clk else t
+            val adj = if (clk != null && clk.hour < 12 && !hasAmPm(text)) partOf(text)?.takeIf { it >= 12 }?.let { LocalTime(clk.hour + 12, clk.minute) } ?: clk
+                else if (clk != null && halfGuessed && clk.hour in 13..18 && !hasAmPm(text) && (partOf(text) ?: 12) < 12) LocalTime(clk.hour - 12, clk.minute)
+                else t
             val other = if (clk != null && halfGuessed && partOf(text) == null) LocalDateTime(relDate!!, otherHalf(adj)).toInstant(tz) else null
             return TimeMatch(LocalDateTime(relDate!!, adj).toInstant(tz), null, spans.minOf { it.first }..spans.maxOf { it.last }, false, other)
         }
@@ -186,6 +188,8 @@ object TimeParser {
         // "tomorrow evening at 7", "at 7 tonight": a part of the day says which half of the clock.
         clock?.let { c ->
             if (c.hour in 1..11 && !hasAmPm(text) && (partHour ?: 0) >= 12) clock = LocalTime(c.hour + 12, c.minute)
+            // "at 6 in the morning": a bare 1-6 was guessed as evening, but the morning says otherwise.
+            else if (halfGuessed && c.hour in 13..18 && !hasAmPm(text) && partHour != null && partHour!! < 12) clock = LocalTime(c.hour - 12, c.minute)
         }
 
         val defaulted = clock == null && partHour == null

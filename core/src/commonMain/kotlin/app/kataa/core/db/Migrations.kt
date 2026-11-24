@@ -23,6 +23,10 @@ object Migrations {
                 setMeta(db, "embed_dim", embedder.dimension.toString())
             }
             if (version < 2) Schema.v2.forEach { db.execute(it) }
+            // A test build briefly created entry_count inside v2, so add it only where it is missing.
+            if (version < 3 && db.queryLong("SELECT count(*) FROM pragma_table_info('journal_days') WHERE name = 'entry_count'") == 0L) {
+                Schema.v3.forEach { db.execute(it) }
+            }
             if (version < Schema.VERSION) db.execute("PRAGMA user_version = ${Schema.VERSION}")
             ensureEmbedderMatches(db, embedder)
         }

@@ -13,7 +13,7 @@ package app.kataa.core.db
  * - Trashing a memory cancels its pending reminders.
  */
 object Schema {
-    const val VERSION = 2
+    const val VERSION = 3
 
     /** Created separately because its dimension depends on the active embedding model. */
     fun createVectorTable(dimension: Int): String {
@@ -298,9 +298,14 @@ object Schema {
             summary        TEXT,
             summary_by_ai  INTEGER NOT NULL DEFAULT 0,
             summarized_at  INTEGER,
-            changed_at     INTEGER NOT NULL,
-            entry_count    INTEGER NOT NULL DEFAULT 0
+            changed_at     INTEGER NOT NULL
         ) WITHOUT ROWID
         """,
     ).map { it.trimIndent().trim() }
+
+    /** v3: how many entries a journal day's summary was made from, so a deleted entry rebuilds it. */
+    val v3: List<String> = listOf(
+        "ALTER TABLE journal_days ADD COLUMN entry_count INTEGER NOT NULL DEFAULT 0",
+        // Existing days: the summary is checked again once (the count starts at 0 and differs from the live count).
+    )
 }

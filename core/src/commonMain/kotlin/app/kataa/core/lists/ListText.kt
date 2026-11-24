@@ -62,7 +62,7 @@ object ListText {
     /** "number 2", "the second one", "2nd", "task three" -> 2/2/2/3. */
     fun ordinal(query: String): Int? {
         val q = Text.normalize(query).replace(Regex("^(?:the |my )?(?:task |item |number |no |thing )?"), "")
-            .replace(Regex("\\s+(?:one|task|item|thing)$"), "").trim()
+            .replace(Regex("\\s+(?:one|1|task|item|thing)$"), "").trim()
         q.removeSuffix("st").removeSuffix("nd").removeSuffix("rd").removeSuffix("th").toIntOrNull()?.let { return it.takeIf { n -> n in 1..99 } }
         ORDINALS.indexOf(q).takeIf { it >= 0 }?.let { return it + 1 }
         if (Regex("^(?:task|item|number|no) ").containsMatchIn(Text.normalize(query))) NUMBER_WORDS.indexOf(q).takeIf { it >= 0 }?.let { return it + 1 }
