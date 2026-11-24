@@ -134,6 +134,8 @@ class MainActivity : ComponentActivity() {
     }
     private val reminderPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { askReminderPermissions(next = true) }
     private var onMindAdded: ((String?) -> Unit)? = null
+    private var adding = false
+    private var refreshMind: Runnable? = null
     private val pickMindParts = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@registerForActivityResult
         val parts = uris.map { uri ->
@@ -142,8 +144,10 @@ class MainActivity : ComponentActivity() {
             name to { contentResolver.openInputStream(uri) ?: throw java.io.IOException("can't open $name") }
         }
         Look.setSmartMode(this, true)
+        adding = true
         onMindAdded?.invoke("Adding the AI… this takes about a minute.")
-        app.mind.importParts(parts) { err -> main.post { onMindAdded?.invoke(err ?: "Added. Starting the AI…") } }
+        refreshMind?.let { main.postDelayed(it, 2000) }
+        app.mind.importParts(parts) { err -> main.post { adding = false; onMindAdded?.invoke(err ?: "Added. Starting the AI…") } }
     }
     private val takePhoto = registerForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val m = snapFor ?: return@registerForActivityResult
@@ -902,7 +906,7 @@ class MainActivity : ComponentActivity() {
             !Look.smartMode(this) -> "Off. Kataa uses only its fast rules."
             mindNow.unsupportedReason() != null -> "Not available: ${mindNow.unsupportedReason()}."
             mindNow.status == MindProvider.Status.READY -> "On. The AI on your phone handles long or unclear sentences and picks the best answer. Nothing leaves your phone."
-            mindNow.status == MindProvider.Status.FAILED -> "Couldn't start the AI on this phone."
+            mindNow.status == MindProvider.Status.FAILED -> "Couldn't start the AI on this phone. Details: ${mindNow.failure ?: "none"}"
             mindNow.status == MindProvider.Status.MISSING || !mindNow.installed() -> "This is the small build without the AI. Download the two AI pieces (Kataa-AI-part1.bin and part2.bin), then tap \"Add AI from files\" and pick both."
             else -> "Starting the AI…"
         }
@@ -927,7 +931,16 @@ class MainActivity : ComponentActivity() {
                 pickMindParts.launch(arrayOf("*/*"))
             })
         }
-        if (mindNow.status == MindProvider.Status.LOADING) main.postDelayed({ if (scene == Scene.SETTINGS) mindDetail.text = mindText() }, 4000)
+        // Keep the status line current while the AI loads or is being added (it doesn't change on its own).
+        val refresh = object : Runnable {
+            override fun run() {
+                if (scene != Scene.SETTINGS) return
+                if (!adding) mindDetail.text = mindText()
+                if (adding || mindNow.status == MindProvider.Status.LOADING) main.postDelayed(this, 2000)
+            }
+        }
+        refreshMind = refresh
+        main.postDelayed(refresh, 2000)
         sectionTitle("Reminders")
         list.addView(settingsRow("Allow reminders", "Notifications, location for store reminders, exact alarms, car Bluetooth") { askReminderPermissions(next = false) })
         list.addView(settingsRow("Car, backups and tools", "Pick your car's Bluetooth, save an encrypted backup, restore") {

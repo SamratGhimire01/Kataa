@@ -23,6 +23,10 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
     private val thread = Executors.newSingleThreadExecutor { r -> Thread(r, "kataa-mind").apply { priority = Thread.NORM_PRIORITY - 1 } }
     @Volatile private var model: LlamaModel? = null
 
+    /** Why the last load failed, in a few words for Settings (null when it didn't fail). */
+    @Volatile var failure: String? = null
+        private set
+
     /** Why the mind can't run here, or null if it can. */
     fun unsupportedReason(): String? {
         val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
@@ -38,8 +42,15 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
         if (!installed()) { status = Status.MISSING; onReady(null); return }
         status = Status.LOADING
         thread.execute {
-            val m = runCatching { open() }.onFailure { android.util.Log.e("Kataa", "mind failed to load", it) }.getOrNull()
-            if (m == null) { status = Status.FAILED; onReady(null); return@execute }
+            failure = null
+            val m = runCatching { open() }.onFailure {
+                android.util.Log.e("Kataa", "mind failed to load", it)
+                failure = "${it.javaClass.simpleName}: ${it.message}"
+            }.getOrNull()
+            if (m == null) {
+                if (failure == null) failure = nativeReason()
+                status = Status.FAILED; onReady(null); return@execute
+            }
             model = m
             val mind = Mind(m)
             runCatching { mind.warmUp() }
@@ -85,6 +96,7 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
 
     /** Frees the ~1 GB (on low memory, or when the user turns Smart mode off). */
     fun unload() {
+        if (status == Status.FAILED || status == Status.MISSING) { status = Status.OFF; return }
         if (status != Status.READY) return
         onReady(null)
         status = Status.OFF
@@ -95,8 +107,12 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
         LlamaNative.load()
         val threads = threads()
         val fastNow = totalRamGb() >= 3.5
-        // Added from files (the small build): load it by path.
-        if (imported.length() == MODEL_SIZE) return LlamaModel.open(imported.path, threads, CONTEXT, fastNow)
+        // Added from files (the small build): load it by path. Repacked weights need ~1 GB of extra RAM;
+        // if the phone can't spare it, load it plain (memory-mapped, slower but light).
+        if (imported.length() == MODEL_SIZE) {
+            if (fastNow) LlamaModel.open(imported.path, threads, CONTEXT, true)?.let { return it }
+            return LlamaModel.open(imported.path, threads, CONTEXT, false)
+        }
         // Repacked weights are 2-3x faster (tested on ARM); they use ~1 GB of RAM, which Android takes back via onTrimMemory.
         val fast = totalRamGb() >= 3.5
         // Installed as a file (older-style packaging): load it by path.
@@ -121,6 +137,13 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
     }
 
     /** Big cores only: on an 8-core phone, 4 threads; never more than 4 (more makes it slower and hotter). */
+    /** The last error lines from llama.cpp, plus the phone's RAM, for the Settings line. */
+    private fun nativeReason(): String {
+        val log = runCatching { LlamaNative.lastLog()?.decodeToString() }.getOrNull().orEmpty()
+            .lines().map { it.trim() }.filter { it.isNotEmpty() }.takeLast(3).joinToString(" | ")
+        return "%.1f GB RAM. %s".format(totalRamGb(), log.ifEmpty { "no details" }).take(400)
+    }
+
     private fun threads(): Int {
         val n = Runtime.getRuntime().availableProcessors()
         return when { n >= 8 -> 4; n >= 6 -> 3; else -> 2 }

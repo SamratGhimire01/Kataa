@@ -54,8 +54,16 @@ jbyteArray toBytes(JNIEnv * env, const std::string & s) {
 
 bool initialized = false;
 
+// The last warnings/errors, so the app can show why loading failed (no logcat on the user's phone).
+std::mutex logMutex;
+std::string lastLog;
+
 void quietLog(ggml_log_level level, const char * text, void *) {
-    if (level >= GGML_LOG_LEVEL_ERROR) fputs(text, stderr);
+    if (level < GGML_LOG_LEVEL_WARN) return;
+    fputs(text, stderr);
+    std::lock_guard<std::mutex> lock(logMutex);
+    lastLog += text;
+    if (lastLog.size() > 2000) lastLog.erase(0, lastLog.size() - 2000);
 }
 
 Engine * finish(llama_model * model, int threads, int nCtx, FILE * file) {
@@ -204,6 +212,13 @@ JNIEXPORT jlong JNICALL Java_app_kataa_core_mind_LlamaNative_loadFd(JNIEnv *, jc
     if (!f) { close(own); return 0; }
     if (fseeko(f, static_cast<off_t>(offset), SEEK_SET) != 0) { fclose(f); return 0; }
     return reinterpret_cast<jlong>(finish(llama_model_load_from_file_ptr(f, modelParams(fast)), threads, nCtx, f));
+}
+
+JNIEXPORT jbyteArray JNICALL Java_app_kataa_core_mind_LlamaNative_lastLog(JNIEnv * env, jclass) {
+    std::lock_guard<std::mutex> lock(logMutex);
+    std::string out = lastLog;
+    lastLog.clear();
+    return toBytes(env, out);
 }
 
 JNIEXPORT jbyteArray JNICALL Java_app_kataa_core_mind_LlamaNative_complete(JNIEnv * env, jclass, jlong h, jint slot, jbyteArray system,

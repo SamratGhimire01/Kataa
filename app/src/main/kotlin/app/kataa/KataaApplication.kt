@@ -31,7 +31,7 @@ class KataaApplication : Application() {
      * the user opens Kataa, never for a background alarm or geofence, so those stay light.
      */
     fun ensureMind() {
-        if (app.kataa.ui.Look.smartMode(this) && mind.status == MindProvider.Status.OFF) mind.load()
+        if (app.kataa.ui.Look.smartMode(this) && (mind.status == MindProvider.Status.OFF || mind.status == MindProvider.Status.FAILED)) mind.load()
     }
 
     override fun onTrimMemory(level: Int) {

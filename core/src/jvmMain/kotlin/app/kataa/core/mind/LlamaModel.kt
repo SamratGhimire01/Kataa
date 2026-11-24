@@ -17,6 +17,8 @@ object LlamaNative {
     @JvmStatic external fun loadFd(fd: Int, offset: Long, threads: Int, nCtx: Int, fast: Boolean): Long
     @JvmStatic external fun complete(handle: Long, slot: Int, system: ByteArray, user: ByteArray, grammar: ByteArray?, maxTokens: Int): ByteArray?
     @JvmStatic external fun free(handle: Long)
+    /** Recent llama.cpp warnings and errors (then cleared): why a load failed. */
+    @JvmStatic external fun lastLog(): ByteArray?
 }
 
 /**
