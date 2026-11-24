@@ -33,6 +33,11 @@ enum class SpeechError {
 /** Platform speech-to-text (Android SpeechRecognizer, iOS SFSpeechRecognizer, or an on-device model). */
 interface SpeechEngine {
     fun start(listener: Listener)
+    /**
+     * Long dictation (an idea, a list, the journal): pauses don't end it; it ends on [stop], on "that's it", or
+     * after a long silence. Engines that can't do this fall back to [start].
+     */
+    fun startLong(listener: Listener) = start(listener)
     /** Stop listening and deliver the final result for what was said so far. */
     fun stop()
     /** Stop and discard. */
@@ -67,12 +72,21 @@ class KataaSession(
     /** The last reply, if it asked the user something. */
     @kotlin.concurrent.Volatile private var awaiting: Reply? = null
 
+    /** True while Kataa waits for a long dictation (after "I've got an idea", "write my list", "today's journal"). */
+    val wantsLongDictation: Boolean
+        get() = awaiting.let { it is Reply.ListeningForIdea || it is Reply.ListeningForList || it is Reply.ListeningForJournal }
+
     /** The big orb / power key: start listening, or finish if already listening. */
-    fun tapToTalk() {
+    fun tapToTalk() = listen(long = wantsLongDictation)
+
+    /** Starts long dictation for the idea, list or journal Kataa just asked for (the app calls it after speaking the prompt). */
+    fun listenLong() = listen(long = true)
+
+    private fun listen(long: Boolean) {
         val engine = speech ?: return fail(SpeechError.UNAVAILABLE)
         if (_state.value is KataaState.Listening) { engine.stop(); return }
         _state.value = KataaState.Listening("", 0f)
-        engine.start(object : SpeechEngine.Listener {
+        val listener = object : SpeechEngine.Listener {
             override fun onLevel(level: Float) {
                 (_state.value as? KataaState.Listening)?.let { _state.value = it.copy(level = level.coerceIn(0f, 1f)) }
             }
@@ -83,7 +97,20 @@ class KataaSession(
                 if (text.isBlank()) fail(SpeechError.NO_SPEECH) else submit(text, voice = true)
             }
             override fun onError(error: SpeechError) = fail(error)
-        })
+        }
+        if (long) engine.startLong(listener) else engine.start(listener)
+    }
+
+    /** A tick box on a list card. */
+    fun setTaskDone(item: app.kataa.core.lists.ListItem, done: Boolean, listKey: String) {
+        runOnCore {
+            try {
+                val c = core()
+                _state.value = KataaState.Done(item.body, c.assistant.setTaskDone(item, done, listKey, context()))
+            } catch (t: Throwable) {
+                _state.value = KataaState.Failed(SpeechError.OTHER)
+            }
+        }
     }
 
     fun cancel() {
@@ -182,7 +209,8 @@ class KataaSession(
             }
             // A question Kataa asked (when? AM or PM? is this password right?): the next thing said answers it.
             fun asks(r: Reply) = r is Reply.NeedsTime || r is Reply.NeedsPlace || r is Reply.NeedsLocation || r is Reply.ConfirmSecret ||
-                r is Reply.PickTime || (r is Reply.NotFound && r.askFor != null)
+                r is Reply.PickTime || (r is Reply.NotFound && r.askFor != null) ||
+                r is Reply.ListeningForIdea || r is Reply.ListeningForList || r is Reply.ListeningForJournal
             awaiting = if (reply is Reply.Several) (reply as Reply.Several).replies.lastOrNull(::asks) else reply.takeIf(::asks)
             _state.value = KataaState.Done(text, reply)
             // Embedding and categories happen after the answer is on screen; a failure there must not

@@ -49,6 +49,8 @@ class KataaCore(
     val reminders = ReminderRepository(db, clock)
     val geofences = GeofencePlanner(db, clock)
     val backup = BackupService(db, clock)
+    val lists = app.kataa.core.lists.TaskLists(db, clock, ids)
+    val journal = app.kataa.core.journal.Journal(db, memories, clock)
     val assistant = app.kataa.core.assistant.Assistant(this)
     val triggers = app.kataa.core.triggers.TriggerEngine(this)
 

@@ -14,7 +14,13 @@ import app.kataa.core.model.Reminder
 import app.kataa.core.model.Source
 import app.kataa.core.mind.Command
 import app.kataa.core.mind.Mind
+import app.kataa.core.journal.JournalDay
+import app.kataa.core.lists.ListItem
+import app.kataa.core.lists.ListKey
+import app.kataa.core.lists.ListText
+import app.kataa.core.lists.TaskList
 import app.kataa.core.nlu.IntentParser
+import app.kataa.core.nlu.ListAsk
 import app.kataa.core.nlu.MomentMatch
 import app.kataa.core.nlu.ObjectLocation
 import app.kataa.core.nlu.PlaceParser
@@ -98,12 +104,25 @@ sealed interface Reply {
     /** The user said no to saving: nothing was stored. */
     data object NotSaved : Reply
     /** "What do I have today?": the reminders for [label] ("today", "tomorrow", "coming up"), soonest first. */
-    data class Agenda(val label: String, val items: List<AgendaItem>) : Reply
+    data class Agenda(val label: String, val items: List<AgendaItem>, val tasks: List<ListItem> = emptyList()) : Reply
     /** "I've got an idea": the app listens longer (pauses don't end it), then calls [Assistant.saveIdea]. */
     data object ListeningForIdea : Reply
+    /** "Write my to-do list": the app listens longer, then the dictation goes to [Assistant.followUp] -> [Assistant.saveList]. */
+    data class ListeningForList(val key: String, val label: String) : Reply
+    /**
+     * A to-do list after something was done to it or asked about it. [items] are the ones affected or the answer
+     * (the ticked item, the added ones, the cheapest task). The screen shows [list] with tick boxes.
+     */
+    data class TaskListReply(val list: TaskList, val action: ListAction, val items: List<ListItem> = emptyList()) : Reply
+    /** "Today's journal": the app listens longer (pauses don't end it), then [Assistant.saveJournal]. */
+    data object ListeningForJournal : Reply
+    /** One day of the journal: summary, entries, and the tasks finished that day. [saved] is the entry just added. */
+    data class JournalShown(val day: JournalDay, val label: String, val tasksDone: List<ListItem>, val saved: Memory? = null) : Reply
     /** "ok thanks", "hello": nothing to save or search. [said] is the normalized text. */
     data class SmallTalk(val said: String) : Reply
 }
+
+enum class ListAction { SHOWN, ADDED, TICKED, UNTICKED, REMOVED, COUNT, LEFT, CHEAPEST, QUICKEST, TOTAL_COST, TOTAL_TIME, NOT_ON_LIST }
 
 /** One choice of a [Reply.PickTime]: "7:13 PM today". */
 data class TimeOption(val atMs: Long, val label: String)
@@ -207,7 +226,9 @@ class Assistant(private val core: KataaCore) {
             }
             AgendaItem(memory, r, description)
         }
-        return Reply.Agenda(when (dayOffset) { 0 -> "today"; 1 -> "tomorrow"; else -> "coming up" }, items)
+        // The day's to-do list belongs to "what do I have today?" too (unfinished ones only).
+        val tasks = core.lists.view(ListKey.day(today.plus(dayOffset ?: 0, DateTimeUnit.DAY)), today).left
+        return Reply.Agenda(when (dayOffset) { 0 -> "today"; 1 -> "tomorrow"; else -> "coming up" }, items, tasks)
     }
 
     /**
@@ -314,9 +335,155 @@ class Assistant(private val core: KataaCore) {
             is Understanding.BrowseCategory -> browse(u, ctx)
             is Understanding.Agenda -> agenda(u.dayOffset, ctx)
             Understanding.StartIdea -> Reply.ListeningForIdea
+            is Understanding.OpenList -> openList(u.key, u.listen, ctx)
+            is Understanding.AddToList -> addToList(u.key, u.items, ctx)
+            is Understanding.ListQuestion -> listQuestion(u.key, u.ask, ctx)
+            is Understanding.Tick -> tick(u, ctx) ?: byRules(reparseWithoutLists(raw, ctx), raw, ctx)
+            is Understanding.RemoveFromList -> removeFromList(u, ctx) ?: byRules(reparseWithoutLists(raw, ctx), raw, ctx)
+            is Understanding.Journal -> if (u.text != null) saveJournal(u.text, ctx) else Reply.ListeningForJournal
+            is Understanding.ShowJournal -> showJournal(u.day, ctx)
             is Understanding.Unclear -> Reply.NeedsClarification(raw)
         }
     }
+
+    private fun reparseWithoutLists(raw: String, ctx: AssistantContext): Understanding {
+        val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
+        return IntentParser.parse(raw, ctx.nowMs, ctx.timeZone, known, lists = false)
+    }
+
+    private fun todayOf(ctx: AssistantContext) = Instant.fromEpochMilliseconds(ctx.nowMs).toLocalDateTime(ctx.timeZone).date
+
+    private fun view(key: String, ctx: AssistantContext) = core.lists.view(key, todayOf(ctx))
+
+    /** "Today's to-do list": shown when it has items, otherwise Kataa listens for them. "Write my list" always listens. */
+    private fun openList(key: String, listen: Boolean, ctx: AssistantContext): Reply {
+        val list = view(key, ctx)
+        if (listen) return Reply.ListeningForList(key, list.label)
+        if (list.items.isNotEmpty()) return Reply.TaskListReply(list, ListAction.SHOWN)
+        val today = todayOf(ctx)
+        // "What are my tasks today?" with no list but reminders: those are the tasks.
+        ListKey.dayOf(key)?.let { d ->
+            val offset = (d.toEpochDays() - today.toEpochDays()).toInt()
+            if (offset in 0..1) (agenda(offset, ctx) as Reply.Agenda).let { if (it.items.isNotEmpty()) return it }
+        }
+        // "Show my shopping list" with no list of that name: the Shopping category, if it has anything.
+        if (key.startsWith("named:")) {
+            val name = key.removePrefix("named:")
+            core.categories.list().firstOrNull { it.name.equals(name, true) || it.slug.equals(name, true) }?.let { c ->
+                if (c.memoryCount > 0) return browse(Understanding.BrowseCategory(c.name, name), ctx)
+            }
+        }
+        return Reply.ListeningForList(key, list.label)
+    }
+
+    /** What the user dictated after [Reply.ListeningForList]: split into items and added to the list. */
+    fun saveList(key: String, dictation: String, ctx: AssistantContext): Reply {
+        val items = ListText.split(stripStopWords(dictation), nouns = key.startsWith("named:"))
+        if (items.isEmpty()) return Reply.NotSaved
+        return addToList(key, items, ctx)
+    }
+
+    private fun addToList(key: String, items: List<String>, ctx: AssistantContext): Reply {
+        val existing = core.lists.items(key).map { ListText.words(it.body) }.toSet()
+        // Saying the same task twice adds it once.
+        val fresh = items.filter { ListText.words(it) !in existing }.distinctBy { ListText.words(it) }
+        val added = core.lists.add(key, fresh)
+        return Reply.TaskListReply(view(key, ctx), ListAction.ADDED, added)
+    }
+
+    /** "How many tasks are done?", "what's the cheapest task?", "how much will today's list cost?". */
+    private fun listQuestion(key: String, ask: ListAsk, ctx: AssistantContext): Reply {
+        val list = view(key, ctx)
+        val left = list.left
+        return when (ask) {
+            ListAsk.COUNT -> Reply.TaskListReply(list, ListAction.COUNT)
+            ListAsk.LEFT -> Reply.TaskListReply(list, ListAction.LEFT, left)
+            ListAsk.CHEAPEST -> Reply.TaskListReply(list, ListAction.CHEAPEST, listOfNotNull(left.filter { it.cost != null }.minByOrNull { it.cost!! }))
+            ListAsk.QUICKEST -> Reply.TaskListReply(list, ListAction.QUICKEST, listOfNotNull(left.filter { it.minutes != null }.minByOrNull { it.minutes!! }))
+            ListAsk.TOTAL_COST -> Reply.TaskListReply(list, ListAction.TOTAL_COST, left.filter { it.cost != null })
+            ListAsk.TOTAL_TIME -> Reply.TaskListReply(list, ListAction.TOTAL_TIME, left.filter { it.minutes != null })
+        }
+    }
+
+    /** Lists to look in when the user didn't say which: today's (with carried items), this month's, then named ones. */
+    private fun searchOrder(key: String?, ctx: AssistantContext): List<TaskList> {
+        if (key != null) return listOf(view(key, ctx))
+        val today = todayOf(ctx)
+        val keys = listOf(ListKey.day(today), ListKey.month(today.year, today.month.ordinal + 1), ListKey.INBOX) +
+            core.lists.keys().filter { it !in setOf(ListKey.day(today)) }
+        return keys.distinct().map { core.lists.view(it, today) }.filter { it.items.isNotEmpty() }
+    }
+
+    /** "Mark milk done" / "untick number 2". Null when no list item matches (then it's an ordinary sentence). */
+    private fun tick(u: Understanding.Tick, ctx: AssistantContext): Reply? {
+        for (list in searchOrder(u.key, ctx)) {
+            val item = core.lists.find(list, u.query, wantDone = !u.done) ?: core.lists.find(list, u.query) ?: continue
+            val after = core.lists.setDone(item.id, u.done) ?: continue
+            return Reply.TaskListReply(view(list.key, ctx), if (u.done) ListAction.TICKED else ListAction.UNTICKED, listOf(after))
+        }
+        if (u.key != null) return Reply.TaskListReply(view(u.key, ctx), ListAction.NOT_ON_LIST)
+        return null
+    }
+
+    /** The tick box on the screen. */
+    fun setTaskDone(item: ListItem, done: Boolean, shownKey: String, ctx: AssistantContext): Reply {
+        val after = core.lists.setDone(item.id, done) ?: item
+        return Reply.TaskListReply(view(shownKey, ctx), if (done) ListAction.TICKED else ListAction.UNTICKED, listOf(after))
+    }
+
+    private fun removeFromList(u: Understanding.RemoveFromList, ctx: AssistantContext): Reply? {
+        for (list in searchOrder(u.key, ctx)) {
+            val item = core.lists.find(list, u.query) ?: continue
+            core.lists.remove(item.id)
+            return Reply.TaskListReply(view(list.key, ctx), ListAction.REMOVED, listOf(item))
+        }
+        if (u.key != null) return Reply.TaskListReply(view(u.key, ctx), ListAction.NOT_ON_LIST)
+        return null
+    }
+
+    /**
+     * A journal entry (what the user said after "today's journal"). Saved as a memory (searchable) on today's page;
+     * the day's quick summary updates at once, the AI one later while charging ([summarizeJournals]).
+     */
+    fun saveJournal(text: String, ctx: AssistantContext): Reply {
+        val body = stripStopWords(text).trim().ifEmpty { return Reply.NotSaved }
+        val m = core.memories.save(NewMemory(body = Text.sentence(body), kind = MemoryKind.NOTE, source = ctx.source,
+            rawTranscript = body.takeIf { ctx.source == Source.VOICE }))
+        val cat = core.categories.bySlug("journal") ?: core.categories.create("Journal", "My journal: how my days went, thoughts and feelings")
+        core.categories.assign(m.id, cat.id)
+        val day = todayOf(ctx)
+        core.journal.addEntry(m.id, day)
+        setLast(m.id)
+        return (showJournal(day, ctx) as Reply.JournalShown).copy(saved = m)
+    }
+
+    private fun showJournal(day: kotlinx.datetime.LocalDate, ctx: AssistantContext): Reply {
+        val from = day.atStartOfDayIn(ctx.timeZone).toEpochMilliseconds()
+        val to = day.plus(1, DateTimeUnit.DAY).atStartOfDayIn(ctx.timeZone).toEpochMilliseconds()
+        return Reply.JournalShown(core.journal.day(day), ListKey.label(ListKey.day(day), todayOf(ctx)), core.lists.doneBetween(from, to))
+    }
+
+    /**
+     * Background job (the app runs it while charging): writes the AI summary for days whose journal changed.
+     * Without the mind the quick summary stays. Returns how many days were summarized.
+     */
+    fun summarizeJournals(maxDays: Int = 7): Int {
+        val m = mind ?: return 0
+        var n = 0
+        for (day in core.journal.needingSummary(maxDays)) {
+            val entries = core.journal.entries(day)
+            if (entries.isEmpty()) continue
+            val summary = runCatching { m.summarizeDay(entries.map { it.body }) }.getOrNull() ?: continue
+            core.journal.setSummary(day, summary, byAi = true)
+            n++
+        }
+        if (n > 0) runCatching { m.warmUp() }
+        return n
+    }
+
+    /** "...and that's it", "okay stop", "done": the words that end a long dictation are not part of it. */
+    private fun stripStopWords(s: String): String =
+        s.trim().replace(Regex("(?i)[,.\\s]*(?:(?:okay|ok|and)\\s+)?(?:that's it|that is it|that's all|that is all|done|stop|stop listening|finish|end|save it|over)[.!]*$"), "").trim()
 
     /**
      * The user said yes to a [Reply.ConfirmSecret], maybe after fixing the [value] or the [service] on the card.
@@ -437,6 +604,16 @@ class Assistant(private val core: KataaCore) {
      * Anything that is not an answer is handled as a new request.
      */
     fun followUp(previous: Reply, raw: String, ctx: AssistantContext): Reply {
+        // Long dictation after "I've got an idea" / "write my to-do list" / "today's journal".
+        if (previous is Reply.ListeningForIdea || previous is Reply.ListeningForList || previous is Reply.ListeningForJournal) {
+            val text = Text.normalize(raw)
+            if (NO.matches(text) || CANCEL.matches(text)) return Reply.NotSaved
+            return when (previous) {
+                is Reply.ListeningForList -> saveList(previous.key, raw, ctx)
+                Reply.ListeningForJournal -> saveJournal(raw, ctx)
+                else -> saveIdea(stripStopWords(raw), ctx)
+            }
+        }
         if (previous is Reply.NotFound && previous.askFor != null) {
             val text = Text.normalize(raw)
             if (NO.matches(text) || NO_TIME.matches(text)) return Reply.NotSaved
@@ -747,6 +924,7 @@ class Assistant(private val core: KataaCore) {
 
     companion object {
         private const val LAST_KEY = "assistant_last_memory_id"
+        private val CANCEL = Regex("^(?:cancel|cancel it|never mind|nevermind|forget it|stop|do not save|do not save it)$")
         private val YES = Regex("^(?:yes|yeah|yep|yup|ya|haan|ho|correct|right|that is right|that is correct|exactly|save it|save|ok|okay|ok save it|sure|confirm|yes save it|yes correct|perfect)$")
         private val NO = Regex("^(?:no|nope|nah|cancel|do not save|do not save it|forget it|never mind|nevermind|stop|wrong)$")
         private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
@@ -758,7 +936,7 @@ class Assistant(private val core: KataaCore) {
         private val PICK_SECOND = Regex("^(?:the )?(?:second|2nd|other|last)(?: (?:one|1))?$")
         private val QUESTION_WORD = Regex("^(?:what|where|when|who|whom|which|how|why|did|do|does|is|are|can|could|show|find|tell|give|search)\\b")
         private val ASKABLE = Regex("^(what|when|which)(?: is| are| was|s)? (?:my |our |the )?(.+?)$")
-        private val ASKABLE_SKIP = Regex("\\b(?:time|today|tomorrow|weather|date today|day today|reminders?|tasks?|plans?)\\b|^(?:i |it |that |this )")
+        private val ASKABLE_SKIP = Regex("\\b(?:time|today|tomorrow|weather|date today|day today|reminders?|tasks?|plans?)\\b|^(?:i |it |that |this |did |do |does |have |had |was |were |am |are )")
         private val YEARLY_THING = Regex("\\b(?:birthday|bday|anniversary|death anniversary|wedding day)\\b")
         private val REMIND_WORD = Regex("\\bremind\\b")
         private val VAULT_WORDS = setOf("password", "passcode", "pin", "secret", "private", "code")

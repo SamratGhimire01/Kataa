@@ -21,9 +21,9 @@ object Migrations {
                 DefaultCategories.seed(db, nowMs)
                 setMeta(db, "embed_model", embedder.modelId)
                 setMeta(db, "embed_dim", embedder.dimension.toString())
-                db.execute("PRAGMA user_version = ${Schema.VERSION}")
             }
-            // Future: if (version < 2) { ... }
+            if (version < 2) Schema.v2.forEach { db.execute(it) }
+            if (version < Schema.VERSION) db.execute("PRAGMA user_version = ${Schema.VERSION}")
             ensureEmbedderMatches(db, embedder)
         }
     }

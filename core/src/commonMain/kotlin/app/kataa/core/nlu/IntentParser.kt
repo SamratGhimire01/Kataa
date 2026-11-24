@@ -8,6 +8,8 @@ enum class QuestionType { WHERE, DID_I, WHEN, GENERAL }
 /** A password said by the user: which app or service it is for, and the value exactly as heard. */
 data class Secret(val service: String, val value: String)
 
+enum class ListAsk { COUNT, LEFT, CHEAPEST, QUICKEST, TOTAL_COST, TOTAL_TIME }
+
 /** What the user meant, before anything is stored. */
 sealed interface Understanding {
     data class Save(
@@ -45,6 +47,20 @@ sealed interface Understanding {
     data class Agenda(val dayOffset: Int?) : Understanding
     /** "I've got an idea": listen longer, then save what follows as an idea. */
     data object StartIdea : Understanding
+    /** "Today's to-do list" said alone: show it, or listen for the items when it is empty. [listen]: "write my list" always listens. */
+    data class OpenList(val key: String, val listen: Boolean) : Understanding
+    /** "Add milk to my shopping list", "today's to do list: buy milk and call mom". */
+    data class AddToList(val key: String, val items: List<String>) : Understanding
+    /** "How many tasks are done?", "what's the cheapest task today?". */
+    data class ListQuestion(val key: String, val ask: ListAsk) : Understanding
+    /** "Mark buy milk done", "tick number 2", "untick the second one". [key] null = today's list, then the others. */
+    data class Tick(val key: String?, val query: String, val done: Boolean) : Understanding
+    /** "Remove milk from my shopping list". */
+    data class RemoveFromList(val key: String?, val query: String) : Understanding
+    /** "Today's journal", "dear diary": listen long, then save as today's journal entry. [text] when said inline. */
+    data class Journal(val text: String?) : Understanding
+    /** "Show my journal for yesterday", "what did I do on Monday". */
+    data class ShowJournal(val day: kotlinx.datetime.LocalDate) : Understanding
     /** Too short or ambiguous: the app should ask "Save this or search for it?". */
     data class Unclear(val text: String) : Understanding
 }
@@ -99,7 +115,7 @@ object IntentParser {
 
     private val HOME_WORDS = setOf("home", "house", "office", "work", "hostel", "room", "my room")
 
-    fun parse(raw: String, nowMs: Long, tz: TimeZone, knownPlaceNames: Set<String> = emptySet()): Understanding {
+    fun parse(raw: String, nowMs: Long, tz: TimeZone, knownPlaceNames: Set<String> = emptySet(), lists: Boolean = true): Understanding {
         val text = Text.stripFillers(Text.normalize(raw))
         if (text.isEmpty()) return Understanding.Unclear(raw)
         val questionMark = Text.isQuestionMarked(raw)
@@ -119,6 +135,7 @@ object IntentParser {
         }
 
         if (IDEA.matches(text)) return Understanding.StartIdea
+        if (lists) ListParser.parse(text, raw, nowMs, tz)?.let { return it }
         AGENDA.find(text)?.let { m ->
             val day = m.groupValues.drop(1).firstOrNull { it.isNotEmpty() }
             return Understanding.Agenda(when (day) { "today", "tonight", "now" -> 0; "tomorrow" -> 1; else -> null })

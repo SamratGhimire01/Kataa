@@ -23,6 +23,9 @@ data class BackupFile(
     val memoryCategories: List<MemoryCategoryDto>,
     val places: List<PlaceDto>,
     val reminders: List<ReminderDto>,
+    val listItems: List<ListItemDto> = emptyList(),
+    val journalEntries: List<JournalEntryDto> = emptyList(),
+    val journalDays: List<JournalDayDto> = emptyList(),
 ) {
     companion object { const val FORMAT = "kataa-backup" }
 }
@@ -63,6 +66,18 @@ data class ReminderDto(
     val btDevice: String? = null, val persistent: Boolean = false, val status: String, val snoozeUntil: Long? = null,
     val lastFiredAt: Long? = null, val createdAt: Long,
 )
+
+@Serializable
+data class ListItemDto(
+    val uuid: String, val listKey: String, val body: String, val position: Int, val cost: Double? = null,
+    val minutes: Int? = null, val doneAt: Long? = null, val createdAt: Long, val deletedAt: Long? = null,
+)
+
+@Serializable
+data class JournalEntryDto(val memoryUuid: String, val day: String)
+
+@Serializable
+data class JournalDayDto(val day: String, val summary: String? = null, val summaryByAi: Boolean = false, val summarizedAt: Long? = null, val changedAt: Long)
 
 data class ImportReport(
     val memoriesAdded: Int,
@@ -129,6 +144,17 @@ class BackupService(private val db: SqlDriver, private val clock: TimeSource) {
         BackupFile(
             exportedAt = clock.nowMs(), memories = memories, categories = categories, memoryCategories = links,
             places = placeRows.map { it.second }, reminders = reminders,
+            listItems = db.query(
+                "SELECT uuid, list_key, body, position, cost, minutes, done_at, created_at, deleted_at FROM list_items WHERE ? OR deleted_at IS NULL ORDER BY id",
+                includeTrash,
+            ) { ListItemDto(it.string(0), it.string(1), it.string(2), it.long(3).toInt(), it.doubleOrNull(4), it.longOrNull(5)?.toInt(), it.longOrNull(6), it.long(7), it.longOrNull(8)) },
+            journalEntries = db.query(
+                "SELECT m.uuid, j.day FROM journal_entries j JOIN memories m ON m.id = j.memory_id WHERE ? OR m.deleted_at IS NULL ORDER BY j.memory_id",
+                includeTrash,
+            ) { JournalEntryDto(it.string(0), it.string(1)) },
+            journalDays = db.query("SELECT day, summary, summary_by_ai, summarized_at, changed_at FROM journal_days ORDER BY day") {
+                JournalDayDto(it.string(0), it.stringOrNull(1), it.long(2) != 0L, it.longOrNull(3), it.long(4))
+            },
         )
     }
 
@@ -244,6 +270,25 @@ class BackupService(private val db: SqlDriver, private val clock: TimeSource) {
                     r.persistent, r.status, r.snoozeUntil, r.lastFiredAt, r.createdAt, r.memoryUuid,
                 )
             }
+        }
+        file.listItems.forEach { i ->
+            db.execute(
+                """
+                INSERT INTO list_items(uuid, list_key, body, position, cost, minutes, done_at, created_at, deleted_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(uuid) DO UPDATE SET done_at = coalesce(list_items.done_at, excluded.done_at)
+                """.trimIndent(),
+                i.uuid, i.listKey, i.body, i.position, i.cost, i.minutes, i.doneAt, i.createdAt, i.deletedAt,
+            )
+        }
+        file.journalEntries.forEach { j ->
+            db.execute("INSERT OR IGNORE INTO journal_entries(memory_id, day) SELECT id, ? FROM memories WHERE uuid = ?", j.day, j.memoryUuid)
+        }
+        file.journalDays.forEach { d ->
+            db.execute(
+                "INSERT OR IGNORE INTO journal_days(day, summary, summary_by_ai, summarized_at, changed_at) VALUES (?, ?, ?, ?, ?)",
+                d.day, d.summary, d.summaryByAi, d.summarizedAt, d.changedAt,
+            )
         }
         ImportReport(added, updated, skipped, catsAdded, placesAdded, remindersAdded)
     }

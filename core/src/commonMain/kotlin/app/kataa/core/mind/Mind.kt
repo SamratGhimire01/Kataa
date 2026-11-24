@@ -63,6 +63,17 @@ class Mind(private val model: LanguageModel) {
         return Pick(p.note, p.answer.trim())
     }
 
+    /**
+     * A short summary of one day's journal, for the day view. Background only (while charging): it uses slot 1,
+     * so the caller warms the pick prompt again afterwards. Null if the model failed.
+     */
+    fun summarizeDay(entries: List<String>): String? {
+        if (entries.isEmpty()) return null
+        val text = entries.joinToString("\n") { "- " + it.trim().take(1200) }.take(3500)
+        val out = model.complete(1, SUMMARY_SYSTEM, "Journal entries:\n$text", null, 110, SUMMARY_BUDGET_MS) ?: return null
+        return out.trim().lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ").take(500).ifEmpty { null }
+    }
+
     private fun toCommand(s: String): Command? {
         val t = s.trim()
         fun after(prefix: String) = t.substring(prefix.length).trim().takeIf { it.isNotEmpty() }
@@ -81,6 +92,12 @@ class Mind(private val model: LanguageModel) {
     @Serializable private class PickJson(val note: Int = 0, val answer: String = "")
 
     companion object {
+        const val SUMMARY_BUDGET_MS = 30_000
+        val SUMMARY_SYSTEM = """
+You summarize one day of a person's spoken journal for them. Write 2 or 3 short sentences in second person
+("You ..."): what happened, who and where was mentioned, and how they felt. Use only what the entries say.
+No advice, no lists, no headings.
+""".trim()
         private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
         val UNDERSTAND_SYSTEM = """
