@@ -777,11 +777,43 @@ class ListsAndJournalTest {
         // "cancel" with no card open never deletes an older memory.
         say("my keys are in the blue drawer")
         clock.now += 3 * 24 * 3600_000L
-        assertEquals(Reply.NotSaved, say("cancel")); assertEquals(Reply.NotSaved, say("cancel it"))
+        for (w in listOf("cancel", "cancel it", "never mind", "forget it")) assertEquals(Reply.NothingToUndo, say(w), w)
         assertIs<Reply.Answer>(say("where are my keys"))
         // An empty value never replaces a password.
         assertNull(app.kataa.core.memory.Secrets.replaceValue("Bank PIN is 1234", " "))
         assertEquals("pin", assertIs<Reply.ConfirmSecret>(say("my bank pin is 4321")).kind)
+    }
+
+    @Test fun reviewFindingsPass18() {
+        fun live() = core.memories.recent(limit = 100).filter { it.deletedAt == null }.map { it.body.trimEnd('.') }
+        // 1, 2, 6: "cancel" right after a save undoes it; later it does nothing.
+        val nt = assertIs<Reply.NeedsTime>(say("remind me to call the plumber"))
+        assertIs<Reply.Undone>(core.assistant.followUp(nt, "cancel", ctx())); assertTrue("Call the plumber" !in live())
+        val pt = assertIs<Reply.PickTime>(say("call didi at 7:13"))
+        assertIs<Reply.Undone>(core.assistant.followUp(pt, "please cancel", ctx())); assertTrue("Call didi" !in live())
+        assertIs<Reply.ReminderSet>(say("remind me to water the garden at 9 pm"))
+        assertIs<Reply.Undone>(say("ok cancel")); assertTrue("Water the garden" !in live())
+        // 3: cancelling a named reminder.
+        assertIs<Reply.ReminderSet>(say("remind me to take medicine at 9 pm"))
+        clock.now += 3600_000L
+        assertEquals(Reply.NothingToUndo, say("cancel"))
+        val off = assertIs<Reply.Undone>(say("cancel my medicine reminder"))
+        assertEquals("Take medicine", off.memory.body.trimEnd('.')); assertTrue(core.reminders.active().none { it.memoryId == off.memory.id })
+        assertIs<Reply.ReminderSet>(say("remind me to call the bank at 8 pm"))
+        clock.now += 3600_000L
+        assertIs<Reply.Undone>(say("don't remind me to call the bank"))
+        assertTrue(live().none { it.startsWith("Do not remind") || it.startsWith("Cancel") })
+        // 4, 7: more ways to ask again or say no on the password card.
+        for (again in listOf("what did you say", "what was that", "is it saved"))
+            assertIs<Reply.ConfirmSecret>(core.assistant.followUp(assertIs<Reply.ConfirmSecret>(say("my gmail password is Sunflower12")), again, ctx()), again)
+        for (no in listOf("no don't", "no no no", "please don't"))
+            assertEquals(Reply.NotSaved, core.assistant.followUp(assertIs<Reply.ConfirmSecret>(say("my gmail password is Sunflower12")), no, ctx()), no)
+        // 5: values that start like a complaint.
+        assertEquals("Lost Boys 99", app.kataa.core.memory.Secrets.value("Wifi password is Lost Boys 99"))
+        // 8: "don't remind me" keeps the to-do on both cards.
+        val pt2 = assertIs<Reply.PickTime>(say("call hari at 7:13"))
+        assertIs<Reply.Saved>(core.assistant.followUp(pt2, "don't remind me", ctx()))
+        assertTrue(live().none { it.startsWith("Do not remind") })
     }
 
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */

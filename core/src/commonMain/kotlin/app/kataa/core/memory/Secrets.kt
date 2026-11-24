@@ -11,7 +11,7 @@ import app.kataa.core.model.MemoryKind
 object Secrets {
     private val WORD = Regex("\\b(?:password|passwords|passcode|pass code|pin|pin code|pin number|otp|cvv|pattern lock|lock code|locker code|combination|wifi key)\\b")
     /** "Facebook password is Samrat 001", "atm pin: 4455", "my pin for the bank is 1234": after the keyword is the value. */
-    private val VALUE = Regex("(?i)\\b(password|passcode|pass code|pin|pin code|pin number|otp|cvv|lock code|locker code|combination|wifi key)(\\s+(?:for|at|in|of)\\s+(?:the\\s+|my\\s+|our\\s+)?[\\w'-]+(?:\\s+[\\w'-]+)?(?=\\s+(?:is|was)\\b|\\s*=))?(\\s+(?:is|=|:|was)\\s*|\\s*[:=]\\s*)(?!(?:on|in|at|under|inside|behind|near|with|kept|stored|written|saved|somewhere|the same|not|wrong|too|expired|blocked|incorrect|broken|forgotten|lost|locked)\\b)(\\S.*)$")
+    private val VALUE = Regex("(?i)\\b(password|passcode|pass code|pin|pin code|pin number|otp|cvv|lock code|locker code|combination|wifi key)(\\s+(?:for|at|in|of)\\s+(?:the\\s+|my\\s+|our\\s+)?[\\w'-]+(?:\\s+[\\w'-]+)?(?=\\s+(?:is|was)\\b|\\s*=))?(\\s+(?:is|=|:|was)\\s*|\\s*[:=]\\s*)(?!(?:on|in|at|under|inside|behind|near|with|kept|stored|written|saved|somewhere|the same)\\b)(?!(?-i:not|wrong|too|expired|blocked|incorrect|broken|forgotten|lost|locked)\\b(?![^\\d]*\\d))(\\S.*)$")
 
     fun looksSecret(body: String, kind: MemoryKind, subject: String?): Boolean {
         if (subject != null && WORD.containsMatchIn(subject.lowercase())) return true

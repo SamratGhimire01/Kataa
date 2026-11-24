@@ -151,8 +151,11 @@ class Assistant(private val core: KataaCore) {
     fun handle(raw: String, ctx: AssistantContext): Reply {
         val said = Text.normalize(raw)
         if (SMALL_TALK.matches(said)) return Reply.SmallTalk(said)
-        // "cancel" with nothing to cancel: nothing happens (it never deletes an older memory).
-        if (Regex("^(?:cancel|cancel it)$").matches(Text.stripFillers(said))) return Reply.NotSaved
+        val plain = Text.stripFillers(said).replace(Regex("^(?:please|ok|okay) "), "")
+        // "cancel": undoes what was just saved (a few minutes ago at most); never an older memory.
+        if (CANCEL_ALONE.matches(plain)) return cancelRecent(ctx)
+        // "cancel my medicine reminder", "don't remind me to take medicine", "turn off my alarm".
+        CANCEL_REMINDER.find(plain)?.let { m -> return cancelReminder(m.groupValues.drop(1).firstOrNull { it.isNotEmpty() } ?: "", plain.contains("alarm") || plain.contains("wake"), plain) }
         val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
         val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone, known)
         // Two requests in one sentence that the rules can each read on their own: no need for the AI.
@@ -763,6 +766,8 @@ class Assistant(private val core: KataaCore) {
             val text = Text.stripFillers(Text.normalize(raw))
             // "remind me to buy milk at 5 pm", "my meeting is at 3 pm": a new request, the asked one stays as it is.
             // "remind me at 7 pm", "make it today at 7 13 in the evening please": only a time, so an answer.
+            // "don't remind me", "skip": keep it as a to-do without a time, as on the "When?" card.
+            if (PICK_NO_TIME.matches(text)) return Reply.Saved(previous.memory)
             if (saysMoreThanATime(text, ctx)) return handle(raw, ctx)
             pickAnswer(previous, text, ctx)?.let { return it }
             pickOnDay(previous, text, ctx)?.let { return it }
@@ -812,7 +817,7 @@ class Assistant(private val core: KataaCore) {
             val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone)
             // "what?", "pardon", "repeat": show the card again.
             if (u is Understanding.Unclear || u is Understanding.Save && u.kind == MemoryKind.NOTE && u.secret == null ||
-                u is Understanding.Ask && text.split(' ').size <= 2) return previous
+                u is Understanding.Ask && (text.split(' ').size <= 2 || AGAIN.matches(text))) return previous
             return handle(raw, ctx)
         }
         val memory = when (previous) {
@@ -1037,6 +1042,30 @@ class Assistant(private val core: KataaCore) {
         return Reply.Corrected(last, updated)
     }
 
+    private fun cancelRecent(ctx: AssistantContext): Reply {
+        val id = Migrations.getMeta(core.db, LAST_KEY)?.toLongOrNull() ?: return Reply.NothingToUndo
+        val m = core.memories.get(id)?.takeIf { it.deletedAt == null } ?: return Reply.NothingToUndo
+        if (ctx.nowMs - maxOf(m.createdAt, m.updatedAt) > RECENT_MS) return Reply.NothingToUndo
+        return undo()
+    }
+
+    /** Cancels the active reminder that best matches [thing] ("medicine"); the alarm when [alarm] and nothing else is named. */
+    private fun cancelReminder(thing: String, alarm: Boolean, said: String): Reply {
+        val words = Text.stripDeterminers(thing).split(' ').map(Text::singular).filter { it.length > 2 && it !in setOf("reminder", "alarm", "that", "this", "one", "the", "for", "about") }
+        val active = core.reminders.active().mapNotNull { r -> core.memories.get(r.memoryId)?.takeIf { it.deletedAt == null }?.let { r to it } }
+        val scored = active.map { (r, m) ->
+            val body = m.body.lowercase().split(Regex("[^a-z0-9']+")).map(Text::singular).toSet()
+            Triple(r, m, if (words.isEmpty()) (if (alarm == (r.persistent && (m.body == "Alarm" || m.body == "Wake up"))) 1 else 0) else words.count { it in body })
+        }.filter { it.third > 0 }
+        val best = scored.maxOfOrNull { it.third } ?: return Reply.NotFound(said)
+        // "cancel the reminder" with several set: not a guess.
+        if (words.isEmpty() && !alarm && scored.size > 1) return Reply.NotFound(said)
+        val chosen = scored.filter { it.third == best }.minByOrNull { it.first.fireAt ?: Long.MAX_VALUE } ?: return Reply.NotFound(said)
+        core.reminders.forMemory(chosen.second.id).forEach { core.reminders.cancel(it.id) }
+        core.memories.trash(chosen.second.id)
+        return Reply.Undone(chosen.second)
+    }
+
     private fun undo(): Reply {
         val id = Migrations.getMeta(core.db, LAST_KEY)?.toLongOrNull() ?: return Reply.NothingToUndo
         val m = core.memories.get(id)?.takeIf { it.deletedAt == null } ?: return Reply.NothingToUndo
@@ -1097,10 +1126,15 @@ class Assistant(private val core: KataaCore) {
 
     companion object {
         private const val LAST_KEY = "assistant_last_memory_id"
+        private const val RECENT_MS = 10 * 60_000L
+        private val CANCEL_ALONE = Regex("^(?:cancel|cancel it|cancel please|never mind|nevermind|forget it)$")
+        private val CANCEL_REMINDER = Regex("^(?:cancel|delete|remove|stop|clear|turn off|switch off|disable)(?: my| the| that| this)? ?(.*?) ?(?:reminder|reminders|alarm|alarms)(?: for| about| to)?(.*)$|^(?:do not|dont|don't) remind me(?: to| about)? (.+)$")
         private val CANCEL = Regex("^(?:cancel|cancel it|cancel that|never mind|nevermind|forget it|stop|do not save|do not save it)$")
         private val YES = Regex("^(?:yes|yeah|yep|yup|ya|haan|ho|correct|right|that is right|that is correct|exactly|save it|save|ok|okay|ok save it|sure|confirm|yes save it|yes correct|perfect)$")
         private val NO = Regex("^(?:no|nope|nah|cancel|cancel it|cancel that|do not save|do not save it|forget it|never mind|nevermind|stop|wrong)$")
-        private val SECRET_NO = Regex("^(?:no |nope |please )?(?:(?:that is|it is|this is)? ?(?:wrong|not right|not correct|incorrect|not it|not that)|(?:do not|dont|don't) save(?: it| that)?|no thanks|no thank you|not now|skip|skip it|leave it|cancel|cancel it|never mind)$")
+        private val PICK_NO_TIME = Regex("^(?:do not remind me|no time|skip|skip it|not now|later|i will decide later|no need|just save it|just save|leave it|no thanks|no thank you)$")
+        private val AGAIN = Regex("^(?:what did you say|what was that|what did you just say|is it saved|did you save it|say (?:it|that) again|can you repeat(?: that)?|come again|sorry what)$")
+        private val SECRET_NO = Regex("^(?:no |nope |please )?(?:no|no no|no no no|do not|dont|don't|(?:that is|it is|this is)? ?(?:wrong|not right|not correct|incorrect|not it|not that)|(?:do not|dont|don't) save(?: it| that)?|no thanks|no thank you|not now|skip|skip it|leave it|cancel|cancel it|never mind)$")
         private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that|yes|yeah|yep)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
         private val MORNING_HINT = Regex("\\b(?:wake|wake up|breakfast|morning|sunrise|before work|before office|before college)\\b")
         private val EVENING_HINT = Regex("\\b(?:dinner|supper|tonight|evening|night|after work|after office|after college|sunset)\\b")
@@ -1135,7 +1169,7 @@ class Assistant(private val core: KataaCore) {
         private val YES_WORD = setOf("yes", "yeah", "yep", "yup", "ya", "haan", "ho", "correct", "right", "ok", "okay", "sure", "confirm", "save", "exactly", "perfect", "ahead", "alright", "fine", "good")
         private val YES_FILLER = setOf("please", "it", "is", "its", "that", "s", "thats", "all", "absolutely", "totally", "go", "ahead", "do", "good", "fine", "thanks", "thank", "you", "just", "now", "kataa")
         private val SMALL_TALK = Regex("^(?:(?:hi there|hello there|hey there|ok|okay|ok ok|thanks|thank you|thanks a lot|thank you so much|cool|great|nice|good|hi|hello|hey|bye|good night|good morning|yes|yeah|no|sure|alright|all right|fine|wow)\\s*)+$")
-        private val NO_TIME = Regex("^(?:no|nope|nah|no thanks|no thank you|skip|skip it|nothing|no time|not now|never mind|nevermind|just save it|just save|save it|later|i will decide later|do not remind me|no need|it is fine|fine|ok|okay|leave it)$")
+        private val NO_TIME = Regex("^(?:no|nope|nah|no thanks|no thank you|skip|skip it|nothing|no time|not now|just save it|just save|save it|later|i will decide later|do not remind me|no need|it is fine|fine|ok|okay|leave it)$")
         private val LOCATION_ONLY = Regex("^(?:in|inside|on|under|behind|beside|next to|near|by|at|in front of|on top of|with)\\b")
     }
 }
