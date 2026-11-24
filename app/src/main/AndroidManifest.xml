@@ -3,11 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      No internet. Kataa never sends memories anywhere, and without these permissions it can't: the
-      search model, speech, and database all run on the phone. (Google Play services downloads the photo
-      text-reading model in its own process, so that still works.) Libraries that add them are overruled.
+      Internet is used for one thing: map pictures (OpenStreetMap tiles) while the "pin a place" map is open.
+      Memories, voice audio and searches never leave the phone; the database and models run on the phone.
     -->
-    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Only to tell whether the phone is online, so voice can use Google's online recognizer then (it runs in the
          Google app). This permission can't send or receive anything. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -63,6 +62,13 @@
             </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- Pin a place on the map, and My places. -->
+        <activity
+            android:name=".places.MapActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Kataa" />
 
         <!-- Tools: car Bluetooth, encrypted backup and restore, raw log. Opened from Settings. -->
         <activity

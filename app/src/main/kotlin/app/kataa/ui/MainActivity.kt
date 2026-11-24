@@ -41,6 +41,7 @@ import app.kataa.R
 import app.kataa.core.assistant.Describe
 import app.kataa.core.assistant.Reply
 import app.kataa.core.assistant.ReplyText
+import app.kataa.places.MapActivity
 import app.kataa.core.lists.ListItem
 import app.kataa.core.lists.ListKey
 import app.kataa.core.memory.Secrets
@@ -98,6 +99,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var nextChip: LinearLayout
     private lateinit var nextIcon: ImageView
     private lateinit var nextText: TextView
+    private lateinit var homeMapButton: View
 
     // Talk
     private lateinit var said: TextView
@@ -152,6 +154,11 @@ class MainActivity : ComponentActivity() {
         if (res.values.any { it } && text != null) session.type(text)
         else showMessage("Kataa can't see where you are without location. You can allow it any time in Settings > Allow reminders.")
     }
+    /** After pinning a place the reminder needed, say the reminder again so it gets the place. */
+    private val pinPlace = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        val again = res.data?.getStringExtra(MapActivity.EXTRA_RETRY)
+        if (res.resultCode == RESULT_OK && !again.isNullOrBlank()) { session.cancel(); session.type(again) }
+    }
     private val reminderPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { askReminderPermissions(next = true) }
     private var onMindAdded: ((String?) -> Unit)? = null
     private var adding = false
@@ -205,6 +212,7 @@ class MainActivity : ComponentActivity() {
             insetTop = bars.top; insetBottom = maxOf(bars.bottom, ime.bottom)
             for (f in listOf(home, talk, answer)) { f.insetTop = bars.top; f.insetBottom = bars.bottom; f.requestLayout() }
             (dock.layoutParams as FrameLayout.LayoutParams).bottomMargin = bars.bottom + ui.dpi(18f)
+            (homeMapButton.layoutParams as FrameLayout.LayoutParams).let { it.bottomMargin = bars.bottom + ui.dpi(22f); it.rightMargin = bars.right + ui.dpi(18f) }
             list.setPadding(ui.dpi(22f), bars.top + ui.dpi(20f), ui.dpi(22f), bars.bottom + ui.dpi(120f))
             (typeBar.layoutParams as? FrameLayout.LayoutParams)?.bottomMargin = insetBottom + ui.dpi(104f)
             dock.requestLayout(); typeBar.requestLayout()
@@ -276,6 +284,14 @@ class MainActivity : ComponentActivity() {
             text = "or type instead"; setPadding(0, ui.dpi(10f), 0, ui.dpi(10f)); setOnClickListener { showTypeBar() }
         }, FracLayout.Spec(0.725f))
 
+        // The map: pin places for reminders (bottom-right, glass).
+        val mapBtn = FrameLayout(this).apply {
+            background = ui.glass(); contentDescription = "Map: pin a place"; elevation = ui.dp(4f)
+            addView(ui.icon(R.drawable.ic_map, 24f, look.fg), FrameLayout.LayoutParams(ui.dpi(24f), ui.dpi(24f), Gravity.CENTER))
+            setOnClickListener { startActivity(MapActivity.intent(this@MainActivity)) }
+        }
+        ui.pressable(mapBtn)
+        homeMapButton = mapBtn
         talk = FracLayout(this)
         said = ui.text(20f, 500, look.fg, Gravity.CENTER, lines = 5)
         talk.add(said, FracLayout.Spec(0.70f, 0.84f, centerY = true))
@@ -355,6 +371,7 @@ class MainActivity : ComponentActivity() {
         dock.addView(remBtn, LinearLayout.LayoutParams(ui.dpi(48f), ui.dpi(48f)))
         dockButtons = listOf(memBtn, mic, remBtn)
         root.addView(dock, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = ui.dpi(18f) })
+        root.addView(homeMapButton, FrameLayout.LayoutParams(ui.dpi(52f), ui.dpi(52f), Gravity.BOTTOM or Gravity.END).apply { bottomMargin = ui.dpi(22f); rightMargin = ui.dpi(18f) })
     }
 
     private fun dockIcon(res: Int, label: String, onClick: () -> Unit) = FrameLayout(this).apply {
@@ -391,6 +408,8 @@ class MainActivity : ComponentActivity() {
             Scene.ANSWER -> orb(NebulaView.Mode.AURA, 0.37f, 1.35f, 1f)
             else -> orb(NebulaView.Mode.AURA, 0.1f, 1.1f, 0.45f)
         }
+        homeMapButton.animate().alpha(if (next == Scene.HOME) 1f else 0f).setDuration(300).start()
+        homeMapButton.isClickable = next == Scene.HOME
         dockButtons[0].alpha = if (next == Scene.MEMORIES || next == Scene.CATEGORY) 1f else 0.7f
         dockButtons[2].alpha = if (next == Scene.REMINDERS) 1f else 0.7f
         if (next == Scene.HOME && prev != Scene.HOME) refreshHome()
@@ -527,7 +546,16 @@ class MainActivity : ComponentActivity() {
                 return
             }
             is Reply.Replaced -> done("Updated", r.memory.body)
-            is Reply.NeedsTime, is Reply.NeedsPlace -> {
+            is Reply.NeedsPlace -> {
+                showMessage(ReplyText.of(r), keepOpen = true)
+                openDialog = dialog().setTitle("Where is ${r.placeName}?")
+                    .setMessage("Pin it on the map, or if you are there now, save this spot.")
+                    .setPositiveButton("Pin on map") { _, _ -> openDialog = null; pinPlace.launch(MapActivity.intent(this, r.placeName, heard)) }
+                    .setNeutralButton("I'm there now") { _, _ -> openDialog = null; session.type("save this place as ${r.placeName}") }
+                    .setNegativeButton("Later") { _, _ -> openDialog = null }
+                    .show()
+            }
+            is Reply.NeedsTime -> {
                 // Kataa asked a question: listen for the answer without another tap.
                 showMessage(ReplyText.of(r), keepOpen = true)
                 main.postDelayed({ if (lastState is KataaState.Done && scene == Scene.TALK) startTalking() }, if (Look.speakReplies(this)) 2600L else 1200L)
@@ -1114,6 +1142,7 @@ class MainActivity : ComponentActivity() {
         refreshMind = refresh
         main.postDelayed(refresh, 2000)
         sectionTitle("Reminders")
+        list.addView(settingsRow("My places", "Pin home, gym or any place on the map, with how close counts") { startActivity(MapActivity.intent(this)) })
         list.addView(settingsRow("Allow reminders", "Notifications, location for store reminders, exact alarms, car Bluetooth") { askReminderPermissions(next = false) })
         sectionTitle("Backup")
         list.addView(settingsRow("Backup, restore and car", "Save an encrypted backup, restore one, pick your car's Bluetooth") {

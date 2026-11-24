@@ -97,6 +97,12 @@ class PlaceRepository(private val db: SqlDriver, private val clock: TimeSource) 
     fun userPlaces(): List<Place> =
         db.query("SELECT $COLS FROM places WHERE origin <> 'POI_PACK' ORDER BY label", map = ::mapPlace)
 
+    /** The user moved or renamed a pinned place; its reminders stay attached. */
+    fun update(id: Long, label: String, lat: Double, lng: Double, radiusM: Double) {
+        require(lat in -90.0..90.0 && lng in -180.0..180.0) { "invalid coordinates" }
+        db.execute("UPDATE places SET label = ?, lat = ?, lng = ?, radius_m = ? WHERE id = ?", label.trim(), lat, lng, radiusM.coerceAtLeast(MIN_RADIUS_M), id)
+    }
+
     fun delete(id: Long) { db.execute("DELETE FROM places WHERE id = ?", id) }
 
     /**
