@@ -194,7 +194,9 @@ object IntentParser {
         KEY_VALUE.find(text)?.let { m ->
             val value = m.groupValues[2].trim()
             if (value.isNotEmpty() && !value.startsWith("in ") && !value.startsWith("on ") && !value.startsWith("under ")) {
-                return Understanding.Save(saveBody(raw), MemoryKind.FACT, Text.subjectKey(m.groupValues[1]), null, replacesOld = true)
+                // A sentence about a password that is not one ("my wifi password is not working") never replaces it.
+                val aboutSecret = Regex("\\b(?:password|passcode|pin|pin code|pattern|otp)$").containsMatchIn(m.groupValues[1].trim())
+                return Understanding.Save(saveBody(raw), MemoryKind.FACT, Text.subjectKey(m.groupValues[1]).takeUnless { aboutSecret }, null, replacesOld = !aboutSecret)
             }
         }
         LOG_DONE.find(text)?.let { m ->
@@ -262,7 +264,9 @@ object IntentParser {
         // Capitals or digits as typed/heard ("On The Rocks", "on123") mean a real password, not a place.
         val typed = originalCase(v, raw).let { o -> o.any(Char::isUpperCase) || o.any(Char::isDigit) }
         // "the wifi password is written on the router", "... is on the fridge": where it is, not what it is.
-        if (!typed && Regex("^(?:(?:written|stuck|kept|saved|stored|pasted|taped|hidden|noted)(?: down| up)? (?:on|in|at|under|inside|behind|near|by|with|somewhere)|(?:on|in|at|under|inside|behind|near) (?:the|my|a|an|our|his|her|top|back)|somewhere)\\b").containsMatchIn(v)) return null
+        if (!typed && Regex("^(?:(?:written|stuck|kept|saved|stored|pasted|taped|hidden|noted)(?: down| up)? (?:on|in|at|under|inside|behind|near|by|with|somewhere)|(?:on|in|at|under|inside|behind|near|with|beside|next to|by) [a-z]+|somewhere)\\b").containsMatchIn(v)) return null
+        // "my wifi password is not working", "... is wrong", "... is too long": about the password, not the password.
+        if (!typed && Regex("^(?:not|wrong|incorrect|invalid|expired|expiring|changed|changing|too|very|so|really|still|case|the same|same|weak|strong|long|short|hard|easy|forgotten|lost|locked|blocked|working|correct|right|different|difficult|complicated|simple|easy to|tricky|stupid|annoying|useless|broken)\\b").containsMatchIn(v)) return null
         if (Regex("^(?:to |about )").containsMatchIn(svc)) return null
         if (!statement) {
             // "remember to change the wifi password tomorrow" is a reminder; "write down the password for the locker in
@@ -299,7 +303,14 @@ object IntentParser {
     private fun reminderBody(text: String, raw: String, time: TimeMatch?, moment: MomentMatch?): String {
         // Remove the time and moment spans (rightmost first so indexes stay valid).
         var s = text
-        listOfNotNull(time?.range, moment?.range).sortedByDescending { it.first }.forEach { r ->
+        // Time pieces one by one ("tomorrow to call didi in the morning" keeps "to call didi"), overlaps merged.
+        val pieces = ((time?.parts?.takeIf { it.isNotEmpty() } ?: listOfNotNull(time?.range)) + listOfNotNull(moment?.range)).sortedBy { it.first }
+        val merged = mutableListOf<IntRange>()
+        for (r in pieces) {
+            val last = merged.lastOrNull()
+            if (last != null && r.first <= last.last + 1) merged[merged.size - 1] = last.first..maxOf(last.last, r.last) else merged += r
+        }
+        merged.asReversed().forEach { r ->
             if (r.first >= 0 && r.last < s.length) s = s.removeRange(r)
         }
         s = s.replace(Regex("\\s+"), " ").trim().replace(REMINDER_LEAD, "").replace(REMINDER_TAIL, "")

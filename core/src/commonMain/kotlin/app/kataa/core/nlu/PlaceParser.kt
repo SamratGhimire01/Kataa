@@ -74,7 +74,7 @@ object PlaceParser {
         ARRIVE.find(text)?.let { m ->
             val name = m.groupValues[1].trim()
             if (HERE.matches(name) || name == "here") return MomentMatch.Place(PlaceRef.Here, onExit = false, m.range)
-            if (name.isNotEmpty() && name !in NOT_PLACES) return MomentMatch.Place(refFor(name, null), onExit = false, m.range)
+            if (name.isNotEmpty() && name !in NOT_PLACES && (name in knownPlaceNames || !Relations.PERSON.matches(name))) return MomentMatch.Place(refFor(name, null), onExit = false, m.range)
         }
         Regex("\\bnext time i am here\\b|\\bwhen i am here (?:next|again)\\b|\\b(?:remind me )?here next time\\b").find(text)?.let {
             return MomentMatch.Place(PlaceRef.Here, onExit = false, it.range)
@@ -86,7 +86,7 @@ object PlaceParser {
             val name = m.groupValues[2].trim()
             if (name.isEmpty() || name in NOT_PLACES || name.split(' ').size > 4) return@forEach
             if (name.first().isDigit()) return@forEach // "at 5", "in 2 hours"
-            if (!name.contains(' ') && name !in knownPlaceNames && Relations.PERSON.matches(name)) return@forEach // "from didi" is a person
+            if (name !in knownPlaceNames && Relations.PERSON.matches(name)) return@forEach // "from (my) didi" is a person
             val kind = typeOf(name)
             val known = name in knownPlaceNames
             // Things after "the/a" are usually objects ("in the drawer") unless they are a known kind or saved place.

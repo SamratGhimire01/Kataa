@@ -512,7 +512,9 @@ class Assistant(private val core: KataaCore) {
         if (thing.isEmpty() || thing.split(' ').size > 5 || ASKABLE_SKIP.containsMatchIn(thing)) return Reply.NotFound(u.query)
         // Only something of yours ("my mom's birthday", "dad's phone number"), not "what happened at the meeting".
         // Recognizers often drop the "'s" ("when is didi birthday"), so a family word counts as yours too.
-        val ownMarker = Regex("(?:^| )(?:my|our) |'s ").containsMatchIn(u.query + " ") || Relations.PERSONAL_FACT.matches(thing)
+        val ownMarker = (Regex("(?:^| )(?:my|our) |'s ").containsMatchIn(u.query + " ") || Relations.PERSONAL_FACT.matches(thing)) &&
+            // "mother's day", "valentine's day", "new year's eve": days for everyone.
+            !(Regex("'s (?:day|eve|night|week)$").containsMatchIn(thing) && !Regex("^(?:my|our) ").containsMatchIn(thing))
         if (!ownMarker) return Reply.NotFound(u.query)
         val yours = thing.replace(Regex("^(?:my|our)\\s+"), "your ").let { if (it.startsWith("your ")) it else "your $it" }
         return Reply.NotFound(u.query, yours, isWhen = m.groupValues[1] == "when")

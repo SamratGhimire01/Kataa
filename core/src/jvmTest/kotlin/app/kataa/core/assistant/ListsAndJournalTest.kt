@@ -1,6 +1,7 @@
 package app.kataa.core.assistant
 
 import app.kataa.core.FakeClock
+import app.kataa.core.db.queryLong
 import app.kataa.core.lists.ListKey
 import app.kataa.core.lists.ListText
 import app.kataa.core.newCore
@@ -284,6 +285,40 @@ class ListsAndJournalTest {
         for (s in listOf("what is a dad joke", "when is the baby shower", "what is the boss meeting")) assertNull(assertIs<Reply.NotFound>(say(s), s).askFor, s)
         // 13: a person is not a place.
         assertTrue(say("get the wifi password from didi").let { it !is Reply.ReminderSet || it.reminders.none { r -> r.placeTarget != null } })
+    }
+
+    /** Fourth bug-hunt pass. */
+    @Test fun reviewFindingsPass4() {
+        fun body(r: Reply) = core.memories.get(assertIs<Reply.ReminderSet>(r, "$r").reminders.single().memoryId)!!.body.trimEnd('.')
+        // 1.
+        assertEquals("Call didi", body(say("remind me tomorrow to call didi in the morning")))
+        assertEquals("Water the plants", body(say("remind me after 2 days to water the plants in the evening")))
+        // 2, 3.
+        assertIs<Reply.ListeningForList>(say("note it down on my shopping list"))
+        assertEquals(ListKey.named("grocery"), assertIs<Reply.ListeningForList>(say("write this on my grocery list")).key)
+        // 4: where it is, not what it is.
+        for (s in listOf("the locker password is with didi", "the wifi password is in dad's phone", "the wifi password is at home", "my netflix password is next to the tv")) {
+            assertTrue(say(s) !is Reply.ConfirmSecret, s)
+        }
+        // 5: a complaint never replaces the saved password.
+        val saved = core.assistant.handle("my wifi password is Sunflower123", ctx().copy(source = app.kataa.core.model.Source.TEXT))
+        if (saved is Reply.ConfirmSecret) core.assistant.followUp(saved, "yes", ctx())
+        for (s in listOf("my wifi password is not working", "my wifi password is wrong", "the wifi password is changed")) {
+            val r = core.assistant.handle(s, ctx().copy(source = app.kataa.core.model.Source.TEXT))
+            assertTrue(r !is Reply.ConfirmSecret && r !is Reply.Replaced, "$s -> $r")
+        }
+        assertEquals(1L, core.db.queryLong("SELECT count(*) FROM memories WHERE body LIKE '%Sunflower123%' AND deleted_at IS NULL"))
+        // 6.
+        list(say("add do the laundry and finish homework to my to do list"))
+        assertEquals("Do the laundry", list(say("i'm done with the laundry")).items.single().body)
+        assertEquals("Finish homework", list(say("done with homework")).items.single().body)
+        // 7: people are not places.
+        for (s in listOf("remind me to get money from my dad", "remind me to get the book from my friend", "remind me to give the keys when i go to didi")) {
+            val r = say(s)
+            assertTrue(r !is Reply.ReminderSet || r.reminders.none { it.placeTarget != null }, "$s -> $r")
+        }
+        // 8: days for everyone.
+        for (s in listOf("when is mother's day", "what is valentine's day")) assertNull(assertIs<Reply.NotFound>(say(s), s).askFor, s)
     }
 
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */

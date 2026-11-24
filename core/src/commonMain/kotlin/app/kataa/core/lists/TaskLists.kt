@@ -154,7 +154,7 @@ class TaskLists(private val db: SqlDriver, private val clock: TimeSource, privat
         // "book" alone is not "Book bus ticket") or wholly (2, "the rice is done" is not "Buy rice").
         val need = when (strict) { 0 -> 0.0; 1 -> 0.6; else -> 1.0 }
         return pool.map { it to ListText.overlap(q, ListText.words(it.body)) }
-            .filter { (item, s) -> s >= 0.5 && ListText.overlap(ListText.words(item.body), q) >= need }
+            .filter { (item, s) -> s >= 0.5 && ListText.overlap(ListText.words(item.body).let { w -> if (strict == 1) (w - WEAK_VERBS).ifEmpty { w } else w }, q) >= need }
             .maxByOrNull { (_, s) -> s }?.first
     }
 
@@ -164,6 +164,8 @@ class TaskLists(private val db: SqlDriver, private val clock: TimeSource, privat
     )
 
     companion object {
+        /** "Do the laundry", "Finish homework": "done with the laundry" names it. ("Buy milk" still needs "buy".) */
+        private val WEAK_VERBS = setOf("do", "finish", "complete", "make", "start", "work")
         private const val COLS = "id, uuid, list_key, body, position, cost, minutes, done_at, created_at"
     }
 }

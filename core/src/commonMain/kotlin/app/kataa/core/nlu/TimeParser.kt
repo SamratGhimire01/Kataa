@@ -30,6 +30,8 @@ data class TimeMatch(
      * [fireAt] is the best guess and this the other reading, so the app can ask "AM or PM?". Null when clear.
      */
     val alternative: Instant? = null,
+    /** The separate pieces of [range] ("tomorrow" ... "in the morning"), so the words between them are kept. */
+    val parts: List<IntRange> = emptyList(),
 )
 
 /**
@@ -116,7 +118,7 @@ object TimeParser {
                 else t
             PART_ALONE.find(text)?.let { spans += it.range } // "after 3 days at 6 in the morning": the words belong to the time
             val other = if (clk != null && halfGuessed && partOf(text) == null) LocalDateTime(relDate!!, otherHalf(adj)).toInstant(tz) else null
-            return TimeMatch(LocalDateTime(relDate!!, adj).toInstant(tz), null, spans.minOf { it.first }..spans.maxOf { it.last }, false, other)
+            return TimeMatch(LocalDateTime(relDate!!, adj).toInstant(tz), null, spans.minOf { it.first }..spans.maxOf { it.last }, false, other, spans.toList())
         }
 
         // 3) Recurrence.
@@ -222,7 +224,7 @@ object TimeParser {
             if (date == null && alt.date > local.date.plus(1, DateTimeUnit.DAY)) alt = LocalDateTime(alt.date.minus(1, DateTimeUnit.DAY), alt.time)
             if (alt != at && alt > local) other = alt.toInstant(tz)
         }
-        return TimeMatch(at.toInstant(tz), rrule, range, defaulted, other)
+        return TimeMatch(at.toInstant(tz), rrule, range, defaulted, other, spans.toList())
     }
 
     private fun otherHalf(t: LocalTime) = LocalTime((t.hour + 12) % 24, t.minute)

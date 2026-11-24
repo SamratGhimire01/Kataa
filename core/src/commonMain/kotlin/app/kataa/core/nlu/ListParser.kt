@@ -76,10 +76,12 @@ object ListParser {
 
         ADD.find(text)?.let { m ->
             // "write it on the list", "note my tasks in my list": no item named.
-            val what = OWNER.replace(m.groupValues[1], "").trim()
-            if (what in setOf("it", "this", "that", "them", "these", "those", "something")) {
+            val said = m.groupValues[1].trim().removeSuffix(" down").removeSuffix(" up").trim()
+            val what = OWNER.replace(said, "").trim()
+            if (said in setOf("it", "this", "that", "them", "these", "those", "something")) {
                 // "note it on my shopping list": open that list and listen for what to add.
-                return Understanding.OpenList(keyFrom(m.groupValues[2], m.groupValues[3], today, nowMs, tz, m.groupValues[0]) ?: return null, listen = true)
+                keyFrom(m.groupValues[2], m.groupValues[3], today, nowMs, tz, m.groupValues[0])?.let { return Understanding.OpenList(it, listen = true) }
+                return Understanding.OpenList(ListKey.day(today), listen = true)
             }
             if (what.isEmpty() || what == "down" || TD_WORD.containsMatchIn(what)) return@let
             val key = keyFrom(m.groupValues[2], m.groupValues[3], today, nowMs, tz, m.groupValues[0]) ?: return@let
