@@ -8,7 +8,9 @@
       text-reading model in its own process, so that still works.) Libraries that add them are overruled.
     -->
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <!-- Only to tell whether the phone is online, so voice can use Google's online recognizer then (it runs in the
+         Google app). This permission can't send or receive anything. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Asked the first time the user taps to talk. Audio never leaves the phone. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

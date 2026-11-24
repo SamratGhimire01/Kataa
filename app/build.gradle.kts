@@ -69,7 +69,9 @@ android {
     // -Pkataa.noMind=true builds the small APK; the AI is then added in Settings from two downloaded files.
     if (providers.gradleProperty("kataa.noMind").orNull != "true")
         sourceSets["main"].jniLibs.directories += rootProject.layout.projectDirectory.dir("mind/jni").asFile.path
-    packaging { jniLibs { keepDebugSymbols += "**/libkataa_mind.so" } }
+    // Kataa's speech model (Whisper base.en, 60 MB, ./scripts/fetch-whisper.sh): arm64 APK only, mapped from the APK.
+    sourceSets["main"].jniLibs.directories += rootProject.layout.projectDirectory.dir("ear/jni").asFile.path
+    packaging { jniLibs { keepDebugSymbols += listOf("**/libkataa_mind.so", "**/libkataa_ear.so") } }
 
     testOptions { unitTests.isIncludeAndroidResources = true }
 

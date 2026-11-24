@@ -69,7 +69,7 @@ class GeofencePlanner(
                 SELECT 1 FROM reminders r JOIN memories m ON m.id = r.memory_id AND m.deleted_at IS NULL
                 WHERE r.type IN ('PLACE_ENTER','PLACE_EXIT') AND r.status IN ('SCHEDULED','SNOOZED')
                   AND (r.place_id = p.id
-                       OR (r.place_brand IS NOT NULL AND r.place_brand = p.brand)
+                       OR (r.place_brand IS NOT NULL AND ${PlaceRepository.brandMatches("r.place_brand", "p.brand", "p.place_type")})
                        OR (r.place_type IS NOT NULL AND r.place_type = p.place_type)))
             """.trimIndent(),
             lat - dLat, lat + dLat, lng - dLng, lng + dLng,

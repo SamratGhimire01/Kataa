@@ -18,3 +18,5 @@ keystore.properties
 native/llm/llama.cpp/
 /models-cache/
 /mind/
+/ear/
+native/whisper/whisper.cpp/

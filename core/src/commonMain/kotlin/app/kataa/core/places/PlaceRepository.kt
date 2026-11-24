@@ -42,7 +42,7 @@ class PlaceRepository(private val db: SqlDriver, private val clock: TimeSource) 
      * Kataa learns a chain branch when the user confirms they are there ("I'm at Big Mart", or Done on a
      * Big Mart reminder). Skips it when a known branch of the same brand is already within [dedupeM].
      */
-    fun learnBranch(brand: String, label: String, lat: Double, lng: Double, dedupeM: Double = 75.0): Place {
+    fun learnBranch(brand: String, label: String, lat: Double, lng: Double, dedupeM: Double = 250.0): Place {
         nearest(lat, lng, brand = brand, limit = 1).firstOrNull()?.let { (p, d) -> if (d <= dedupeM) return p }
         return save(label, lat, lng, brand = brand, origin = PlaceOrigin.LEARNED)
     }
@@ -58,12 +58,36 @@ class PlaceRepository(private val db: SqlDriver, private val clock: TimeSource) 
                 ON CONFLICT(poi_ref) WHERE poi_ref IS NOT NULL DO UPDATE SET
                     label = excluded.label, brand = excluded.brand, place_type = excluded.place_type,
                     lat = excluded.lat, lng = excluded.lng, radius_m = excluded.radius_m
+                ON CONFLICT DO NOTHING
                 """.trimIndent(),
                 p.label, normalizeBrand(p.brand), p.placeType, p.lat, p.lng, p.radiusM.coerceAtLeast(MIN_RADIUS_M), p.ref, now,
             )
         }
         pois.size
     }
+
+    /**
+     * Loads the offline map of shops and places (app asset places/nepal.tsv.gz, from OpenStreetMap):
+     * tab-separated ref, name, brand, kind, lat, lon. Skips it when [version] is already loaded.
+     * Returns how many rows were loaded (0 when up to date).
+     */
+    fun importPlacesPack(version: String, lines: Sequence<String>): Int {
+        if (app.kataa.core.db.Migrations.getMeta(db, PACK_KEY) == version) return 0
+        val pois = lines.mapNotNull { line ->
+            val f = line.split('\t')
+            if (f.size < 6) return@mapNotNull null
+            val lat = f[4].toDoubleOrNull() ?: return@mapNotNull null
+            val lng = f[5].toDoubleOrNull() ?: return@mapNotNull null
+            val type = f[3].ifBlank { null }
+            Poi("osm:${f[0]}", f[1], f[2].ifBlank { f[1] }, type, lat, lng, radiusFor(type))
+        }.toList()
+        val n = importPoiPack(pois)
+        app.kataa.core.db.Migrations.setMeta(db, PACK_KEY, version)
+        return n
+    }
+
+    /** How many map places are loaded (0 before the pack is imported). */
+    fun packSize(): Long = db.queryOne("SELECT count(*) FROM places WHERE origin = 'POI_PACK'") { it.long(0) } ?: 0
 
     fun get(id: Long): Place? = db.queryOne("SELECT $COLS FROM places WHERE id = ?", id, map = ::mapPlace)
 
@@ -93,10 +117,10 @@ class PlaceRepository(private val db: SqlDriver, private val clock: TimeSource) 
             SELECT ${COLS.split(", ").joinToString(", ") { "p.$it" }}
             FROM places_rtree t JOIN places p ON p.id = t.id
             WHERE t.min_lat >= ? AND t.max_lat <= ? AND t.min_lng >= ? AND t.max_lng <= ?
-              AND (? IS NULL OR p.brand = ?) AND (? IS NULL OR p.place_type = ?)
+              AND (? IS NULL OR ${brandMatches("?", "p.brand", "p.place_type")}) AND (? IS NULL OR p.place_type = ?)
             """.trimIndent(),
             lat - dLat, lat + dLat, lng - dLng, lng + dLng,
-            normalizeBrand(brand), normalizeBrand(brand), placeType, placeType,
+            normalizeBrand(brand), normalizeBrand(brand), normalizeBrand(brand), normalizeBrand(brand), normalizeBrand(brand), placeType, placeType,
             map = ::mapPlace,
         ).map { it to distanceM(lat, lng, it.lat, it.lng) }
             .filter { it.second <= maxDistanceM }
@@ -108,6 +132,25 @@ class PlaceRepository(private val db: SqlDriver, private val clock: TimeSource) 
         const val DEFAULT_RADIUS_M = 150.0
         const val MIN_RADIUS_M = 100.0
         internal const val COLS = "id, label, brand, place_type, lat, lng, radius_m, origin, poi_ref"
+        private const val PACK_KEY = "places_pack_version"
+
+        /** Big stores have big car parks: a wider circle so the reminder fires on arrival, not deep inside. */
+        private fun radiusFor(type: String?): Double = when (type) {
+            "mall", "department_store", "supermarket", "hospital", "university", "college", "marketplace", "bus_station" -> 150.0
+            else -> 100.0
+        }
+
+        /**
+         * SQL: does brand key [wanted] match place brand [have]? Equal, or [wanted] (4+ letters) starts [have] at a
+         * shop or business, so "bigmart" matches the "Big Mart Anamnagar" branch and "bhatbhateni" matches
+         * "Bhat-Bhateni Super Market", but not "Bhatbhateni Temple" or a school of that name.
+         */
+        fun brandMatches(wanted: String, have: String, type: String): String =
+            "($have = $wanted OR (length($wanted) >= 4 AND substr($have, 1, length($wanted)) = $wanted" +
+                " AND coalesce($type, '') NOT IN ($NOT_SHOPS)))"
+
+        private const val NOT_SHOPS = "'place_of_worship','school','college','university','bus_station','police','library'," +
+            "'park','stadium','hospital','clinic','doctors','dentist','post_office','marketplace','veterinary'"
 
         /** Match key for chains: "Big-Mart ", "BigMart" and "big mart" all become "bigmart". */
         fun normalizeBrand(brand: String?): String? =

@@ -137,9 +137,7 @@ class CaptureActivity : ComponentActivity() {
             is KataaState.Done -> {}
             is KataaState.Failed -> {
                 nebula.setState(NebulaView.State.IDLE)
-                val typing = if (s.error == SpeechError.UNAVAILABLE) AndroidSpeechEngine.voiceTypingIntent(this) else null
-                if (typing != null) { session.dismiss(); inVoiceTyping = true; runCatching { voiceTyping.launch(typing) }.onFailure { inVoiceTyping = false } }
-                else say(if (s.error == SpeechError.UNAVAILABLE) "No voice typing on this phone." else "Couldn't hear you. Tap to try again.")
+                say(if (s.error == SpeechError.UNAVAILABLE) "Voice isn't working right now. Tap to try again." else "Couldn't hear you. Tap to try again.")
             }
         }
         if (s !is KataaState.Done) return

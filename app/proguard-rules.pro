@@ -5,3 +5,4 @@
 -keep class ai.onnxruntime.** { *; }
 # JNI: native/llm/kataa_llm.cpp (the on-device AI) is called by these names.
 -keep class app.kataa.core.mind.LlamaNative { native <methods>; }
+-keep class app.kataa.core.speech.WhisperNative { native <methods>; }

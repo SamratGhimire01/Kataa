@@ -22,7 +22,7 @@ import java.util.Locale
  *
  * SpeechRecognizer must be used on the main thread; every call here is posted there.
  */
-class AndroidSpeechEngine private constructor(private val context: Context) : SpeechEngine {
+class AndroidSpeechEngine private constructor(private val context: Context, private val onlineOnly: Boolean = false) : SpeechEngine {
     private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
 
@@ -52,8 +52,10 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
         val langs = languages()
         val all = buildList {
             if (realRecognizer(context) != null) langs.forEach { add(Attempt(Way.SERVICE_ONLINE, it)) }
-            if (onDeviceAvailable()) langs.forEach { add(Attempt(Way.ON_DEVICE, it)) }
-            langs.forEach { add(Attempt(Way.SYSTEM_DEFAULT, it)) }
+            if (!onlineOnly) {
+                if (onDeviceAvailable()) langs.forEach { add(Attempt(Way.ON_DEVICE, it)) }
+                langs.forEach { add(Attempt(Way.SYSTEM_DEFAULT, it)) }
+            }
         }
         val p = preferred
         return if (p != null && p in all) listOf(p) + (all - p) else all
@@ -210,6 +212,9 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
          * opens the phone's own voice typing screen instead.
          */
         fun createOrNull(context: Context): AndroidSpeechEngine = AndroidSpeechEngine(context.applicationContext)
+
+        /** Only Google's online recognizer (no on-device fallbacks): used while there is internet. */
+        fun onlineOnly(context: Context): AndroidSpeechEngine = AndroidSpeechEngine(context.applicationContext, onlineOnly = true)
 
         private val PREFERRED = listOf("com.google.android.as", "com.google.android.googlequicksearchbox", "com.google.android.tts")
 

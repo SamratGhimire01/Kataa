@@ -30,7 +30,11 @@ class KataaApplication : Application() {
      * Loads the AI if Smart mode is on (no-op when it is loaded, loading, or can't run here). Called only when
      * the user opens Kataa, never for a background alarm or geofence, so those stay light.
      */
+    /** Kataa's own offline speech recognizer (arm64 builds); null on phones that use Android's instead. */
+    val ear: app.kataa.voice.WhisperSpeechEngine? by lazy { app.kataa.voice.WhisperSpeechEngine.createOrNull(this) }
+
     fun ensureMind() {
+        ear?.warmUp()
         if (app.kataa.ui.Look.smartMode(this) && (mind.status == MindProvider.Status.OFF || mind.status == MindProvider.Status.FAILED)) mind.load()
     }
 
@@ -46,7 +50,7 @@ class KataaApplication : Application() {
     val session: KataaSession by lazy {
         KataaSession(
             core = { cores.core },
-            speech = AndroidSpeechEngine.createOrNull(this),
+            speech = ear?.let { app.kataa.voice.HybridSpeechEngine(this, it) } ?: AndroidSpeechEngine.createOrNull(this),
             context = {
                 val now = System.currentTimeMillis()
                 val loc = Triggers.recentLocation(this)?.let { GeoPoint(it.latitude, it.longitude, it.accuracy.toDouble()) }
@@ -75,7 +79,19 @@ class KataaApplication : Application() {
         // Warm up (open database, load model) in the background so the first question is instant.
         cores.worker.execute {
             runCatching { cores.core.processPending() }
+            // The offline map of Nepal's shops (OpenStreetMap): loaded once per app version, a few seconds.
+            runCatching {
+                // The build tools store "nepal.tsv.gz" unzipped as "nepal.tsv" (compressed inside the APK anyway).
+                val raw = runCatching { assets.open("places/nepal.tsv") }.getOrNull()
+                    ?: java.util.zip.GZIPInputStream(assets.open("places/nepal.tsv.gz"), 1 shl 16)
+                raw.bufferedReader().useLines { lines -> cores.core.places.importPlacesPack(PLACES_PACK_VERSION, lines) }
+            }.onFailure { android.util.Log.e("Kataa", "places pack", it) }
             runCatching { Triggers.refreshAll(this) }
         }
+    }
+
+    companion object {
+        /** Bump when app/src/main/assets/places/nepal.tsv.gz is regenerated (tools/extract_places.py). */
+        const val PLACES_PACK_VERSION = "osm-nepal-2026-11-24"
     }
 }

@@ -99,6 +99,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var said: TextView
     private lateinit var shine: ShineTextView
     private lateinit var sub: TextView
+    /** "Thinking…", under what the user said (never on top of it). */
+    private lateinit var thinking: TextView
     private lateinit var snap: LinearLayout
     private lateinit var typeBar: EditText
 
@@ -119,8 +121,8 @@ class MainActivity : ComponentActivity() {
     private val autoClose = Runnable { session.dismiss() }
     private val thinkingHint = Runnable {
         if (lastState is KataaState.Thinking) {
-            sub.text = "Thinking…"; sub.alpha = 0f; sub.translationY = 0f
-            sub.animate().alpha(1f).setDuration(500).start()
+            thinking.text = "Thinking…"; thinking.alpha = 0f
+            thinking.animate().alpha(1f).setDuration(500).start()
         }
     }
 
@@ -131,6 +133,13 @@ class MainActivity : ComponentActivity() {
     private val voiceTyping = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val text = AndroidSpeechEngine.voiceTypingResult(res.data)
         if (text != null) session.type(text)
+    }
+    /** What the user said that needed their location ("I'm at Big Mart"): said again once location is allowed. */
+    private var needsLocationFor: String? = null
+    private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
+        val text = needsLocationFor; needsLocationFor = null
+        if (res.values.any { it } && text != null) session.type(text)
+        else showMessage("Kataa can't see where you are without location. You can allow it any time in Settings > Allow reminders.")
     }
     private val reminderPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { askReminderPermissions(next = true) }
     private var onMindAdded: ((String?) -> Unit)? = null
@@ -263,6 +272,8 @@ class MainActivity : ComponentActivity() {
         talk.add(shine, FracLayout.Spec(0.655f, 0.92f, centerY = true))
         sub = ui.text(16f, 500, look.dim, Gravity.CENTER, lines = 3)
         talk.add(sub, FracLayout.Spec(0.70f, 0.84f))
+        thinking = ui.text(15f, 600, look.accent, Gravity.CENTER).apply { alpha = 0f }
+        talk.add(thinking, FracLayout.Spec(0.83f, 0.84f))
         snap = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             background = ui.glass(); setPadding(ui.dpi(18f), ui.dpi(12f), ui.dpi(20f), ui.dpi(12f))
@@ -440,23 +451,19 @@ class MainActivity : ComponentActivity() {
                 main.removeCallbacks(thinkingHint)
                 main.postDelayed(thinkingHint, 1200)
             }
-            is KataaState.Done -> { main.removeCallbacks(thinkingHint); if (sub.text == "Thinking…") sub.text = ""; showReply(s.heard, s.reply) }
+            is KataaState.Done -> { hideThinking(); showReply(s.heard, s.reply) }
             is KataaState.Failed -> when (s.error) {
                 SpeechError.NO_SPEECH -> session.dismiss()
                 SpeechError.NO_PERMISSION -> { session.dismiss(); micPermission.launch(Manifest.permission.RECORD_AUDIO) }
-                SpeechError.UNAVAILABLE -> {
-                    session.dismiss()
-                    val i = AndroidSpeechEngine.voiceTypingIntent(this)
-                    if (i != null) runCatching { voiceTyping.launch(i) }.onFailure { showTypeBar() }
-                    else showMessage("This phone has no voice typing installed. Install Google or Speech Services by Google from the Play Store, or type instead.", typeLink = true)
-                }
+                // Never open Google's voice screen on its own: say what happened and offer typing.
+                SpeechError.UNAVAILABLE -> showMessage("Voice isn't working on this phone right now. Type instead, or try again.", typeLink = true)
                 SpeechError.OTHER -> showMessage("I couldn't catch that (error ${AndroidSpeechEngine.lastErrorCode}). Tap the drop to try again.")
             }
         }
     }
 
     private fun resetTalk() {
-        main.removeCallbacks(thinkingHint)
+        hideThinking()
         shine.hide(); sub.text = ""; sub.alpha = 0f; snap.visibility = View.INVISIBLE; said.alpha = 1f; said.text = ""
     }
 
@@ -505,8 +512,25 @@ class MainActivity : ComponentActivity() {
             }
             is Reply.NotFound -> showNotFound(heard)
             is Reply.SmallTalk -> showMessage(ReplyText.of(r))
+            Reply.NeedsLocation -> {
+                val granted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                    checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                if (!granted && heard.isNotBlank()) {
+                    // Ask right here, then do what they said without making them repeat it.
+                    showMessage("I need your location for that.", keepOpen = true)
+                    needsLocationFor = heard
+                    locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                } else {
+                    showMessage("I couldn't find where you are. Turn on Location (GPS) in quick settings, then say it again.")
+                }
+            }
             else -> showMessage(ReplyText.of(r), keepOpen = true)
         }
+    }
+
+    private fun hideThinking() {
+        main.removeCallbacks(thinkingHint)
+        thinking.animate().cancel(); thinking.alpha = 0f
     }
 
     private fun done(word: String, detail: String, offerPhoto: Memory? = null) {
@@ -947,7 +971,7 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent(this, DevConsoleActivity::class.java))
         })
         list.addView(ui.text(13.5f, 500, look.dim).apply {
-            text = "Everything you save stays on this phone, encrypted. Kataa has no internet permission.\n3D objects: Microsoft Fluent Emoji (MIT). Fonts: Space Grotesk, Manrope, Nunito (OFL)."
+            text = "Everything you save stays on this phone, encrypted. Kataa has no internet permission.\n3D objects: Microsoft Fluent Emoji (MIT). Fonts: Space Grotesk, Manrope, Nunito (OFL). Shop map: © OpenStreetMap contributors (ODbL)."
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(34f) })
     }
 
