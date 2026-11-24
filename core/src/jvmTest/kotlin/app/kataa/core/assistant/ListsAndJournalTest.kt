@@ -426,6 +426,31 @@ class ListsAndJournalTest {
         assertEquals(ListAction.TOTAL_TIME, list(say("total time")).action)
     }
 
+    /** QA: the AI journal summary, the timeline, total time and "what did I do on Monday". */
+    @Test fun qaCoverage() {
+        val calls = mutableListOf<String>()
+        core.assistant.mind = app.kataa.core.mind.Mind(object : app.kataa.core.mind.LanguageModel {
+            override fun complete(slot: Int, system: String, user: String, grammar: String?, maxTokens: Int, budgetMs: Int): String? {
+                calls += user; return if (user.startsWith("Journal entries")) "A calm day at home, then momo with didi." else null
+            }
+        })
+        core.assistant.followUp(Reply.ListeningForJournal, "Stayed home and read all morning", ctx())
+        core.assistant.followUp(Reply.ListeningForJournal, "Went for momo with didi in the evening", ctx())
+        assertEquals(1, core.assistant.summarizeJournals())
+        val day = core.journal.day(today)
+        assertEquals("A calm day at home, then momo with didi.", day.summary); assertTrue(day.summaryByAi)
+        assertTrue(calls.any { "momo with didi" in it })
+        assertEquals(0, core.assistant.summarizeJournals()) // nothing changed since
+        core.assistant.mind = null
+
+        assertIs<Reply.Timeline>(say("show me everything"))
+        say("add study 2 hours and cook 30 minutes to my to do list")
+        val t = list(say("how long will today's tasks take"))
+        assertEquals(ListAction.TOTAL_TIME, t.action); assertEquals(150, t.list.totalMinutes)
+        // Monday 23 Nov 2026 is yesterday (today is Tuesday 24).
+        assertEquals(LocalDate(2026, 11, 23), assertIs<Reply.JournalShown>(say("what did i do on monday")).day.day)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()
