@@ -50,7 +50,7 @@ tasks.withType<Test>().configureEach {
     // On-device language model ("mind"): host build of native/llm and the GGUF (scripts/fetch-llm-model.sh).
     val llmDir = rootProject.layout.projectDirectory.dir("native/build/host-llm").asFile
     systemProperty("kataa.llmLib", listOf("libkataa_llm.so", "libkataa_llm.dylib").map { llmDir.resolve(it) }.firstOrNull { it.exists() }?.absolutePath ?: "")
-    systemProperty("kataa.llmModel", listOf("mind/jni/arm64-v8a/libkataa_mind.so", "models-cache/qwen2.5-1.5b-instruct-q4_0.gguf")
+    systemProperty("kataa.llmModel", listOf("mind/jni/arm64-v8a/libkataa_mind.so", "models-cache/kataa-mind-qwen2.5-1.5b.gguf")
         .map { rootProject.layout.projectDirectory.file(it).asFile }.firstOrNull { it.exists() }?.absolutePath ?: "")
     maxHeapSize = "1g"
     testLogging { events("failed"); showStandardStreams = true; exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }

@@ -21,7 +21,7 @@ Plan, decisions and phases: `docs/BLUEPRINT.md`. User research: `docs/RESEARCH_f
   tests use it; `-Pkataa.driver=jdbc` forces sqlite-jdbc instead.
 - Android: SDK at `local.properties` `sdk.dir`, NDK 30.0.16248370, platform 37. `./gradlew :app:assembleRelease`.
 - On-device AI ("mind", optional): `./scripts/fetch-llama.sh` (pinned llama.cpp) and `./scripts/fetch-llm-model.sh`
-  (Qwen2.5-1.5B Q4_0, ~1 GB, stored as `mind/jni/arm64-v8a/libkataa_mind.so` so it is packaged uncompressed and
+  (Qwen2.5-1.5B quantized to Q4_0 with Q3_K embeddings, 975 MB so the arm64 APK stays under 1 GiB, stored as `mind/jni/arm64-v8a/libkataa_mind.so` so it is packaged uncompressed and
   page-aligned and memory-mapped from the APK). Host lib for tests:
   `cmake -S native/llm -B native/build/host-llm -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build native/build/host-llm`.
   Without them the app and tests still build; `MindModelTest` prints SKIP.

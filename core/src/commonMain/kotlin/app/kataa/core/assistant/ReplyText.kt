@@ -23,6 +23,12 @@ object ReplyText {
         is Reply.CategoryCreated -> "Made a new category: ${r.category.name}."
         is Reply.CategoryList -> if (r.memories.isEmpty()) "Nothing in ${r.category.name} yet." else "${r.memories.size} in ${r.category.name}."
         is Reply.NeedsClarification -> "Should I save that, or search for it?"
+        is Reply.SmallTalk -> when {
+            Regex("thank").containsMatchIn(r.said) -> "You're welcome."
+            Regex("^(?:hi|hello|hey|good morning)").containsMatchIn(r.said) -> "Hi! Tell me something to remember, or ask me anything."
+            Regex("bye|good night").containsMatchIn(r.said) -> "Bye! I'll keep everything safe."
+            else -> "Okay."
+        }
         is Reply.Several -> r.replies.joinToString(" ") { of(it) }
     }
 }

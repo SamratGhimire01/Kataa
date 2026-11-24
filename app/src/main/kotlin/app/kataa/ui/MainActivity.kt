@@ -488,6 +488,7 @@ class MainActivity : ComponentActivity() {
                 km.createConfirmDeviceCredentialIntent("Unlock Private", "To show this answer")?.let { pendingUnlockQuery = r.query; unlock.launch(it) }
             }
             is Reply.NotFound -> showNotFound(heard)
+            is Reply.SmallTalk -> showMessage(ReplyText.of(r))
             else -> showMessage(ReplyText.of(r), keepOpen = true)
         }
     }

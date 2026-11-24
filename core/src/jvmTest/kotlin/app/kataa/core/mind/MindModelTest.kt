@@ -86,6 +86,9 @@ class MindModelTest {
         kotlin.test.assertIs<app.kataa.core.assistant.Reply.Several>(both)
         assertTrue(both.replies.any { it is app.kataa.core.assistant.Reply.ReminderSet } && both.replies.any { it is app.kataa.core.assistant.Reply.Saved }, "$both")
 
+        // Small talk never reaches the model and is never saved.
+        assertTrue(say("ok thanks") !is app.kataa.core.assistant.Reply.Saved)
+
         val a = say("ugh what was the wifi thing again")
         assertTrue(a is app.kataa.core.assistant.Reply.Answer && a.shortAnswer.contains("sunflower123", true), "$a")
         val b = say("where did I leave my keys")

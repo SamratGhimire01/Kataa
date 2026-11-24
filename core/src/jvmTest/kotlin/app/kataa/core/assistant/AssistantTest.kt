@@ -27,6 +27,16 @@ class AssistantTest {
 
     private fun minutes(n: Int) { clock.now += n * 60_000L }
 
+    @Test fun smallTalkIsNotSavedOrSearched() {
+        say("My keys are in the blue drawer")
+        for (s in listOf("ok thanks", "Thank you!", "hello", "okay", "ok ok")) {
+            val r = say(s)
+            assertTrue(r is Reply.SmallTalk, "$s -> $r")
+        }
+        assertEquals("You're welcome.", ReplyText.of(say("thanks")))
+        assertEquals(1, core.memories.recent(50).size)
+    }
+
     @Test fun whereAreMyKeys() {
         assertIs<Reply.Saved>(say("My keys are in the blue drawer"))
         minutes(60)

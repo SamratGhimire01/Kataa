@@ -80,6 +80,8 @@ sealed interface Reply {
     data class NeedsClarification(val text: String) : Reply
     /** One sentence held several requests ("remind me to X and my Y is Z"); each got its own reply. */
     data class Several(val replies: List<Reply>) : Reply
+    /** "ok thanks", "hello": nothing to save or search. [said] is the normalized text. */
+    data class SmallTalk(val said: String) : Reply
 }
 
 /**
@@ -95,6 +97,8 @@ class Assistant(private val core: KataaCore) {
     @kotlin.concurrent.Volatile var mind: Mind? = null
 
     fun handle(raw: String, ctx: AssistantContext): Reply {
+        val said = Text.normalize(raw)
+        if (SMALL_TALK.matches(said)) return Reply.SmallTalk(said)
         val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
         val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone, known)
         val m = mind
@@ -174,6 +178,8 @@ class Assistant(private val core: KataaCore) {
     private fun needsMind(u: Understanding, raw: String): Boolean {
         val text = Text.normalize(raw)
         val words = text.split(' ').count { it.isNotBlank() }
+        // Small talk ("ok thanks", "hello") is never a memory: don't let the model turn it into one.
+        if (SMALL_TALK.matches(text)) return false
         return when (u) {
             is Understanding.Unclear -> words >= 1
             is Understanding.Save -> u.kind == MemoryKind.NOTE && (words >= 8 || MULTI.containsMatchIn(text) || HINTS.containsMatchIn(text))
@@ -492,6 +498,7 @@ class Assistant(private val core: KataaCore) {
         private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
         private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
         private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")
+        private val SMALL_TALK = Regex("^(?:(?:ok|okay|ok ok|thanks|thank you|thanks a lot|thank you so much|cool|great|nice|good|hi|hello|hey|bye|good night|good morning|yes|yeah|no|sure|alright|all right|fine|wow)\\s*)+$")
         private val NO_TIME = Regex("^(?:no|nope|nah|no thanks|no thank you|skip|skip it|nothing|no time|not now|never mind|nevermind|just save it|just save|save it|later|i will decide later|do not remind me|no need|it is fine|fine|ok|okay|leave it)$")
         private val LOCATION_ONLY = Regex("^(?:in|inside|on|under|behind|beside|next to|near|by|at|in front of|on top of|with)\\b")
     }
