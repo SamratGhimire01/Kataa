@@ -773,6 +773,17 @@ class ListsAndJournalTest {
         assertTrue(app.kataa.core.nlu.IntentParser.parse("hi there is milk in the fridge", clock.now, tz) !is app.kataa.core.nlu.Understanding.Ask)
     }
 
+    @Test fun qaFindingsFinal() {
+        // "cancel" with no card open never deletes an older memory.
+        say("my keys are in the blue drawer")
+        clock.now += 3 * 24 * 3600_000L
+        assertEquals(Reply.NotSaved, say("cancel")); assertEquals(Reply.NotSaved, say("cancel it"))
+        assertIs<Reply.Answer>(say("where are my keys"))
+        // An empty value never replaces a password.
+        assertNull(app.kataa.core.memory.Secrets.replaceValue("Bank PIN is 1234", " "))
+        assertEquals("pin", assertIs<Reply.ConfirmSecret>(say("my bank pin is 4321")).kind)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()

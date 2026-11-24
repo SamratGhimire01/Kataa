@@ -83,7 +83,7 @@ sealed interface Understanding {
  * classifier and the optional on-device LLM can later handle what these rules leave as [Understanding.Unclear].
  */
 object IntentParser {
-    private val UNDO = Regex("^(?:undo|undo that|forget that|forget it|delete that|delete the last one|remove that|scratch that|never mind|nevermind|cancel|cancel it|cancel that|that is wrong delete it)$")
+    private val UNDO = Regex("^(?:undo|undo that|forget that|forget it|delete that|delete the last one|remove that|scratch that|never mind|nevermind|cancel that|that is wrong delete it)$")
     private val CORRECT = Regex("^(?:actually|no|nope|correction|sorry|i mean|i meant|wait)\\b[\\s,:-]*(?:it is|they are|it was|they were|i said)?\\s*(.+)$")
     private val CREATE_CATEGORY = Regex("^(?:please )?(?:make|create|add|start|new)(?: me)? (?:a )?(?:new )?(?:category|folder|section)(?: called| named| for)? (.+?)(?: for (.+))?$")
     private val BROWSE = Regex("^(?:show|open|list|see)(?: me)?(?: all)?(?: of)?(?: my)? (.+?)(?: stuff| things| notes| memories| category| items| list)?$")

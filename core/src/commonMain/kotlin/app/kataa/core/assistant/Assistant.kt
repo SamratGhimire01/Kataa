@@ -96,7 +96,10 @@ sealed interface Reply {
      * [Assistant.confirmSecret]; a new value ("no, it's sunflower124") asks again; "no" -> [Reply.NotSaved].
      * [replacing] is the current one for that service, when this would replace it.
      */
-    data class ConfirmSecret(val service: String, val value: String, val replacing: Memory?, internal val pending: Understanding.Save, internal val raw: String) : Reply
+    data class ConfirmSecret(val service: String, val value: String, val replacing: Memory?, internal val pending: Understanding.Save, internal val raw: String) : Reply {
+        /** "pin", "password", "passcode": what the card calls it. */
+        val kind: String get() = pending.secret?.kind ?: "password"
+    }
     /**
      * "Call Didi at 7:13": the reminder is saved but not scheduled until the user picks one of [options]
      * (the best guess first), by tapping or saying "PM", "morning", "tomorrow"... -> [Assistant.followUp].
@@ -148,6 +151,8 @@ class Assistant(private val core: KataaCore) {
     fun handle(raw: String, ctx: AssistantContext): Reply {
         val said = Text.normalize(raw)
         if (SMALL_TALK.matches(said)) return Reply.SmallTalk(said)
+        // "cancel" with nothing to cancel: nothing happens (it never deletes an older memory).
+        if (Regex("^(?:cancel|cancel it)$").matches(Text.stripFillers(said))) return Reply.NotSaved
         val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
         val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone, known)
         // Two requests in one sentence that the rules can each read on their own: no need for the AI.

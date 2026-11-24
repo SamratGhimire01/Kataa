@@ -676,7 +676,7 @@ class MainActivity : ComponentActivity() {
         metaText.text = "Saved ${relative(memory.createdAt)}"
         // A password shown after unlock: one tap copies it (marked sensitive, cleared after 30 seconds).
         if (secret != null && app.privateUnlocked) {
-            copyLabel.text = "Copy password"
+            copyLabel.text = if (Secrets.kind(memory.body) == "pin") "Copy PIN" else "Copy password"
             saveIt.visibility = View.VISIBLE; saveIt.alpha = 0f
             saveIt.animate().alpha(1f).setStartDelay(700).setDuration(500).start()
             saveAction = { copySecret(Secrets.name(memory.body) ?: "Password", secret) }
@@ -978,7 +978,7 @@ class MainActivity : ComponentActivity() {
     private fun editMemory(m: Memory) {
         val secretValue = Secrets.takeIf { it.looksSecret(m) }?.value(m.body)
         val service = EditText(this).apply { setText(Secrets.service(m.body) ?: ""); hint = "App or service"; isSingleLine = true }
-        val body = EditText(this).apply { setText(secretValue ?: m.body); hint = if (secretValue != null) "Password" else "Memory" }
+        val body = EditText(this).apply { setText(secretValue ?: m.body); hint = if (secretValue == null) "Memory" else if (Secrets.kind(m.body) == "pin") "PIN" else "Password" }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(ui.dpi(22f), ui.dpi(8f), ui.dpi(22f), 0)
             if (secretValue != null) { addView(ui.text(13f, 600, look.dim).apply { text = "For" }); addView(service); addView(ui.text(13f, 600, look.dim).apply { text = if (Secrets.kind(m.body) == "pin") "PIN" else "Password"; setPadding(0, ui.dpi(10f), 0, 0) }) }
@@ -986,6 +986,8 @@ class MainActivity : ComponentActivity() {
         }
         dialog().setTitle("Edit").setView(box)
             .setPositiveButton("Save") { _, _ ->
+                // An empty value would wipe the password: keep the old one.
+                if (secretValue != null && body.text.isBlank()) { Toast.makeText(this, "Nothing changed: the ${if (Secrets.kind(m.body) == "pin") "PIN" else "password"} can't be empty", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
                 // A password stays a password and a PIN a PIN ("Bank PIN is 1235", subject "bank pin").
                 // Only the value changed: keep the user's own words and subject ("Wifi password at home is ...").
                 val sameService = service.text.toString().trim() == (Secrets.service(m.body) ?: "")
@@ -1261,15 +1263,19 @@ class MainActivity : ComponentActivity() {
     private fun confirmSecretCard(r: Reply.ConfirmSecret) {
         showMessage(ReplyText.of(r).substringBefore(":") + ": check it, then save.", keepOpen = true)
         val service = EditText(this).apply { setText(r.service); hint = "App or service (Wifi, Gmail…)"; isSingleLine = true }
-        val value = EditText(this).apply { setText(r.value); hint = "Password"; isSingleLine = true }
+        val word = if (r.kind == "pin") "PIN" else r.kind.replaceFirstChar { it.uppercase() }
+        val value = EditText(this).apply { setText(r.value); hint = word; isSingleLine = true }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(ui.dpi(22f), ui.dpi(8f), ui.dpi(22f), 0)
             addView(ui.text(13f, 600, look.dim).apply { text = "For" }); addView(service)
-            addView(ui.text(13f, 600, look.dim).apply { text = "Password"; setPadding(0, ui.dpi(10f), 0, 0) }); addView(value)
+            addView(ui.text(13f, 600, look.dim).apply { text = word; setPadding(0, ui.dpi(10f), 0, 0) }); addView(value)
             if (r.replacing != null) addView(ui.text(13f, 500, look.dim).apply { text = "This replaces the one you saved ${relative(r.replacing!!.createdAt)}."; setPadding(0, ui.dpi(10f), 0, 0) })
         }
-        openDialog = dialog().setTitle("Save this password?").setView(box).setCancelable(false)
-            .setPositiveButton("Save") { _, _ -> openDialog = null; session.confirmSecret(value.text.toString(), service.text.toString()) }
+        openDialog = dialog().setTitle("Save this ${if (r.kind == "pin") "PIN" else r.kind}?").setView(box).setCancelable(false)
+            .setPositiveButton("Save") { _, _ ->
+                if (value.text.isBlank()) { Toast.makeText(this, "Type the $word first", Toast.LENGTH_SHORT).show(); confirmSecretCard(r.copy(service = service.text.toString())); return@setPositiveButton }
+                openDialog = null; session.confirmSecret(value.text.toString(), service.text.toString())
+            }
             .setNegativeButton("Don't save") { _, _ -> openDialog = null; session.cancelSecret() }
             .show()
     }

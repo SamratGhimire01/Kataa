@@ -41,6 +41,7 @@ object Secrets {
 
     /** The body with a new value in place of the old one: "Wifi password at home is NEW1". */
     fun replaceValue(body: String, value: String): String? {
+        if (value.isBlank()) return null
         val g = VALUE.find(body)?.groups?.get(4) ?: return null
         return body.substring(0, g.range.first) + value.trim()
     }
