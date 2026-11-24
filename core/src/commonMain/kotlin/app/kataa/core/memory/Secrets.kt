@@ -39,5 +39,13 @@ object Secrets {
         return before.replaceFirstChar { it.uppercase() }
     }
 
+    /** What the secret is called: "wifi password", "ATM PIN", "PIN". */
+    fun name(body: String): String? {
+        val m = VALUE.find(body) ?: return null
+        val kind = m.groupValues[1].lowercase().let { if (it.startsWith("pin")) "PIN" else it }
+        val before = body.substring(0, m.range.first).trim().replace(Regex("(?i)^(?:my|the|our)(?:\\s+|$)"), "").trim()
+        return if (before.isEmpty()) kind else "$before $kind"
+    }
+
     const val DOTS = "••••••"
 }

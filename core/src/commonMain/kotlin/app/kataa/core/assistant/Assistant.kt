@@ -498,12 +498,14 @@ class Assistant(private val core: KataaCore) {
      */
     fun confirmSecret(c: Reply.ConfirmSecret, ctx: AssistantContext, value: String = c.value, service: String = c.service): Reply {
         val v = value.trim().ifEmpty { return Reply.NotSaved }
-        val svc = service.trim().ifEmpty { c.service }
+        val svc = service.trim()
         val same = v == c.pending.secret?.value && svc == c.pending.secret.service
+        val kind = c.pending.secret?.kind ?: "password"
+        val secret = app.kataa.core.nlu.Secret(svc, v, kind)
         val u = if (same) c.pending else c.pending.copy(
-            body = "${svc.replaceFirstChar { it.uppercase() }} password is $v",
-            subject = Text.subjectKey("${svc.lowercase()} password"),
-            secret = app.kataa.core.nlu.Secret(svc, v),
+            body = (if (svc.isBlank()) "My ${secret.name.replaceFirstChar { it.lowercase() }.let { if (kind.startsWith("pin")) "PIN" else it }}" else secret.name) + " is $v",
+            subject = Text.subjectKey(if (svc.isBlank()) kind else "${svc.lowercase()} $kind"),
+            secret = secret,
         )
         return save(c.raw, u, ctx, confirmed = true)
     }
@@ -792,14 +794,19 @@ class Assistant(private val core: KataaCore) {
         if (previous is Reply.ConfirmSecret) {
             val text = Text.normalize(raw)
             if (YES.matches(text) || saysYes(text)) return confirmSecret(previous, ctx)
-            if (NO.matches(text)) return Reply.NotSaved
+            if (NO.matches(text) || SECRET_NO.matches(text)) return Reply.NotSaved
             // "no it is sunflower124", "it's sunflower124": the corrected value, shown again for a yes.
             CORRECT_VALUE.find(text)?.let { m ->
                 val fixed = m.groupValues[1].trim()
+                // "it is not", "it is not right": a no, not a value.
+                if (Regex("^(?:not|wrong|incorrect)\\b").containsMatchIn(fixed)) return Reply.NotSaved
                 val i = raw.lowercase().lastIndexOf(fixed)
                 val v = if (i >= 0) raw.substring(i, i + fixed.length) else fixed
                 return previous.copy(value = v)
             }
+            // "that is it", "it is", or anything that would only become a note: ask again rather than drop the password.
+            val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone)
+            if (u is Understanding.Unclear || u is Understanding.Save && u.kind == MemoryKind.NOTE && u.secret == null || u is Understanding.Ask && text.split(' ').size <= 3) return previous
             return handle(raw, ctx)
         }
         val memory = when (previous) {
@@ -1087,7 +1094,8 @@ class Assistant(private val core: KataaCore) {
         private val CANCEL = Regex("^(?:cancel|cancel it|cancel that|never mind|nevermind|forget it|stop|do not save|do not save it)$")
         private val YES = Regex("^(?:yes|yeah|yep|yup|ya|haan|ho|correct|right|that is right|that is correct|exactly|save it|save|ok|okay|ok save it|sure|confirm|yes save it|yes correct|perfect)$")
         private val NO = Regex("^(?:no|nope|nah|cancel|cancel it|cancel that|do not save|do not save it|forget it|never mind|nevermind|stop|wrong)$")
-        private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
+        private val SECRET_NO = Regex("^(?:no |nope )?(?:that is|it is|this is)? ?(?:wrong|not right|not correct|incorrect|not it|not that)$|^(?:do not|dont|don't) save(?: it| that)?$")
+        private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that|yes|yeah|yep)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
         private val MORNING_HINT = Regex("\\b(?:wake|wake up|breakfast|morning|sunrise|before work|before office|before college)\\b")
         private val EVENING_HINT = Regex("\\b(?:dinner|supper|tonight|evening|night|after work|after office|after college|sunset)\\b")
         private val PERSONAL_PLACE = Regex("^(?:my|our) |\\b(?:house|home|room|flat|apartment|hostel|village|quarters|ghar|dera|farm|garden|plot)$")

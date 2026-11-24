@@ -6,7 +6,17 @@ import kotlinx.datetime.TimeZone
 enum class QuestionType { WHERE, DID_I, WHEN, GENERAL }
 
 /** A password said by the user: which app or service it is for, and the value exactly as heard. */
-data class Secret(val service: String, val value: String)
+data class Secret(val service: String, val value: String, val kind: String = "password") {
+    /** "Wifi password", "ATM PIN", or just "PIN" / "Password" when no service was named. */
+    val name: String get() = nameOf(service, kind)
+
+    companion object {
+        fun nameOf(service: String, kind: String): String {
+            val k = if (kind.startsWith("pin")) "PIN" else kind
+            return if (service.isBlank()) k.replaceFirstChar { it.uppercase() } else "${service.replaceFirstChar { it.uppercase() }} $k"
+        }
+    }
+}
 
 enum class ListAsk { COUNT, LEFT, CHEAPEST, QUICKEST, TOTAL_COST, TOTAL_TIME }
 
@@ -175,7 +185,7 @@ object IntentParser {
         val time = TimeParser.parse(text, nowMs, tz)
         val moment = PlaceParser.parse(text, knownPlaceNames)?.takeUnless { m ->
             // "in one hour and fifteen minutes": the words are the time, not a place.
-            time != null && (time.parts + listOf(time.range)).any { r -> m.range.first <= r.last && r.first <= m.range.last }
+            time != null && time.parts.ifEmpty { listOf(time.range) }.any { r -> m.range.first <= r.last && r.first <= m.range.last }
         }
         val obligation = OBLIGATION.containsMatchIn(text)
         val task = TASK_START.containsMatchIn(text) && !NOT_A_TASK.containsMatchIn(text) && !questionMark
@@ -270,14 +280,17 @@ object IntentParser {
             ?: PW_MY.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
             ?: PW_BARE.find(text)?.takeIf { it.groupValues[1] !in setOf("my", "your", "his", "her", "what", "which") }?.let { it.groupValues[1] to it.groupValues[2] }
             ?: return null
-        val svc = service.trim().removePrefix("my ").removePrefix("the ").trim()
+        // The kind of secret ("pin", "passcode", "password") and the service without "my"/"the" ("" when none is named).
+        val kind = Regex("\\b(pin|passcode|password)\\b").find(text)?.groupValues?.get(1) ?: "password"
+        val svc = service.trim().replace(Regex("^(?:(?:my|the|our)\\b\\s*)+"), "").trim()
+            .let { if (it in setOf("password", "passcode", "pin", "pin code")) "" else it }
         // "my pin is one two three four": the digits.
         val v = value.trim().let { s ->
             val digits = mapOf("zero" to "0", "oh" to "0", "one" to "1", "two" to "2", "three" to "3", "four" to "4", "five" to "5", "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9")
             val w = s.split(' ')
             if (w.size >= 3 && w.all { it in digits || it.length == 1 && it[0].isDigit() }) w.joinToString("") { digits[it] ?: it } else s
         }
-        if (svc.isEmpty() || v.isEmpty() || svc.split(' ').size > 5) return null
+        if (v.isEmpty() || svc.split(' ').size > 5) return null
         // Said as a plain statement ("my wifi password is x"): keep the user's own words. Otherwise write it clearly.
         val statement = Regex("\\b(?:password|passcode|pin|pin code)(?: (?:at|in|for) (?:my |the |our )?[a-z0-9'-]+(?: [a-z0-9'-]+)?)? (?:is|=) ").containsMatchIn(text) &&
             !text.startsWith("change") && !Regex("\\bnew\\b").containsMatchIn(text)
@@ -299,17 +312,17 @@ object IntentParser {
                 if (t.range.first == 0 && t.range.last >= v.length - 1) return null
             }
         }
-        // "my pin is 1234": the kind of secret is its name ("PIN", "Password").
-        val kindOnly = svc in setOf("password", "passcode", "pin", "pin code")
-        val shownService = if (kindOnly) (if (svc.startsWith("pin")) "PIN" else svc.replaceFirstChar { it.uppercase() })
-            else restoreCase(svc, raw).replaceFirstChar { it.uppercase() }
+        val shownService = if (svc.isEmpty()) "" else restoreCase(svc, raw).let { s -> if (s.length <= 4 && s == s.lowercase() && svc in setOf("atm", "sim", "upi")) s.uppercase() else s.replaceFirstChar { it.uppercase() } }
         val shown = originalCase(v, raw)
         val exact = originalValue(v, raw)
+        val said = value.trim()
         val body = if (statement) saveBody(raw).let { b -> if (!exact.endsWith("?")) b.removeSuffix("?").trimEnd() else b }
             .let { b -> if (b.endsWith(shown) && exact.length > shown.length) b + exact.substring(shown.length) else b }
-            else "$shownService password is $exact"
-        return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey(if (kindOnly) svc else "$svc password"), null, replacesOld = true,
-            secret = Secret(shownService, exact))
+            // "my atm pin is one two three four": stored as the digits confirmed on the card.
+            .let { b -> if (v != said) b.replace(Regex("(?i)\\b(?:(?:zero|oh|one|two|three|four|five|six|seven|eight|nine|\\d)\\s*){3,}$"), v) else b }
+            else "${Secret.nameOf(shownService, kind)} is $exact"
+        return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey(if (svc.isEmpty()) kind else "$svc $kind"), null, replacesOld = true,
+            secret = Secret(shownService, exact, kind))
     }
 
     /**

@@ -80,7 +80,7 @@ object TimeParser {
     private val DATE_DM = Regex("\\b(?:on )?(?:the )?(\\d{1,2})(?:st|nd|rd|th)?(?: of)? $MONTHNAME\\b")
     private val DATE_MD = Regex("\\b(?:on )?$MONTHNAME (\\d{1,2})(?:st|nd|rd|th)?\\b")
     private val HOURS_AND_MINUTES = Regex("\\b(?:in|after) ([a-z0-9]+) (?:hours?|hrs?) (?:and )?([a-z0-9]+(?:[ -][a-z]+)?) (?:minutes?|mins?)\\b(?: from now| later)?")
-    private val HOUR_AND_HALF = Regex("\\b(?:in|after) (?:([a-z0-9]+) (?:hours?|hrs?) and a half|([a-z0-9]+) and a half (?:hours?|hrs?)|(\\d+)\\.5 (?:hours?|hrs?))\\b(?: from now| later)?")
+    private val HOUR_AND_HALF = Regex("\\b(?:in|after) (?:([a-z0-9]+) (?:hours?|hrs?) and (?:a )?half|([a-z0-9]+) and (?:a )?half (?:hours?|hrs?)|(\\d+)\\.5 (?:hours?|hrs?))\\b(?: from now| later)?")
 
     /** "an" -> 1, "thirty five" -> 35, "12" -> 12. */
     private fun spokenNumber(s: String): Int? {
@@ -88,7 +88,7 @@ object TimeParser {
         val parts = s.split(' ', '-').map { Text.numberValue(it) ?: return null }
         return parts.sum()
     }
-    private val DATE_D = Regex("\\bon the (\\d{1,2})(?:st|nd|rd|th)\\b(?! $NOT_A_DAY)|(?<!\\bfor )\\bthe (\\d{1,2})(?:st|nd|rd|th)(?! $NOT_A_DAY)(?= at\\b| by\\b| in the\\b| morning\\b| evening\\b| night\\b)|\\b(?:by|before|until|till) the (\\d{1,2})(?:st|nd|rd|th)\\b(?! $NOT_A_DAY)")
+    private val DATE_D = Regex("\\bon the (\\d{1,2})(?:st|nd|rd|th)\\b(?! $NOT_A_DAY)|(?<!\\bfor )\\bthe (\\d{1,2})(?:st|nd|rd|th)(?! $NOT_A_DAY)(?= at\\b| by\\b| in the\\b| morning\\b| evening\\b| night\\b)|\\b(?:by|until|till) the (\\d{1,2})(?:st|nd|rd|th)\\b(?! $NOT_A_DAY)")
     /** "on the 3rd floor": an ordinal that is not a day of the month. */
     private const val NOT_A_DAY = "(?:floor|shelf|drawer|row|room|step|stair|street|lane|house|building|box|cabinet|rack|level|page|place|position|time|gate|door|seat|bench|block|flat|platform)"
 

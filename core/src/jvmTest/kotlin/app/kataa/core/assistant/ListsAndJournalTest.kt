@@ -699,6 +699,36 @@ class ListsAndJournalTest {
         assertTrue(say("ok google where are my keys") !is Reply.Saved)
     }
 
+    @Test fun reviewFindingsPass15() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r")
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun confirm(s: String, a: String = "yes") = core.assistant.followUp(assertIs<Reply.ConfirmSecret>(say(s), s), a, ctx()).also { core.processPending() }
+        // 1: a place between the day and the time stays a place.
+        val bank = set(say("remind me tomorrow at the bank at 5 pm to deposit cash"))
+        assertEquals("Deposit cash", bank.memory.body.trimEnd('.')); assertEquals(2, bank.reminders.size)
+        // 2, 6: a PIN never replaces the password, and a corrected PIN replaces the old PIN.
+        assertIs<Reply.Saved>(confirm("my password is sunflower12"))
+        assertIs<Reply.Saved>(confirm("save my pin 4321"))
+        assertEquals(2, core.memories.recent(limit = 50).count { it.deletedAt == null && app.kataa.core.memory.Secrets.looksSecret(it) })
+        val fixed = confirm("my bank pin is 1234", "no it is 1235")
+        val corrected = assertIs<Reply.Saved>(core.assistant.followUp(assertIs<Reply.ConfirmSecret>(fixed), "yes", ctx()))
+        assertEquals("Bank PIN is 1235", corrected.memory.body)
+        assertIs<Reply.Replaced>(confirm("my bank pin is 5678"))
+        // 3, 4, 5: answers on the password card.
+        val yesFix = core.assistant.followUp(assertIs<Reply.ConfirmSecret>(say("my wifi password is sunflower12")), "yes it is sunflower99", ctx())
+        assertEquals("sunflower99", assertIs<Reply.ConfirmSecret>(yesFix).value)
+        for (no in listOf("that is wrong", "that's wrong", "that is not correct", "dont save it", "it is not", "it is not right"))
+            assertEquals(Reply.NotSaved, core.assistant.followUp(assertIs<Reply.ConfirmSecret>(say("my office password is abc12")), no, ctx()), no)
+        assertIs<Reply.ConfirmSecret>(core.assistant.followUp(assertIs<Reply.ConfirmSecret>(say("my office password is abc12")), "that is it", ctx()))
+        // 7, 8: stored digits and spoken names.
+        val atm = confirm("my atm pin is one two three four")
+        assertEquals("My atm pin is 1234", assertIs<Reply.Saved>(atm).memory.body)
+        assertEquals("Here's your atm PIN. It's on the screen.", ReplyText.spoken(core.assistant.handle("what is my atm pin", ctx())))
+        // 9, 10: "hi there" before a request, "one and half hours".
+        assertEquals("Call mom", set(say("hi there remind me to call mom at 5 pm")).memory.body.trimEnd('.'))
+        assertEquals("2026-11-24T09:30", local(set(say("remind me in one and half hours to call mom")).reminders.single().fireAt!!))
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()
