@@ -27,8 +27,37 @@ object Text {
             .replace('’', '\'').replace('‘', '\'').replace('“', '"').replace('”', '"')
         for ((from, to) in CONTRACTIONS) s = s.replace(Regex("\\b" + Regex.escape(from) + "\\b"), to)
         s = s.replace(Regex("[\\s,]+"), " ").replace(Regex(" ([.!?;:])"), "$1")
+        s = clockWords(s)
         return s.trim().trimEnd('.', '!', '?', ';', ':', ',').trim()
     }
+
+    private val HOUR_WORDS = mapOf(
+        "one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5, "six" to 6, "seven" to 7, "eight" to 8,
+        "nine" to 9, "ten" to 10, "eleven" to 11, "twelve" to 12,
+    )
+    private val MINUTE_WORDS = mapOf("o five" to "05", "ten" to "10", "fifteen" to "15", "twenty" to "20", "thirty" to "30", "forty" to "40", "forty five" to "45", "forty-five" to "45", "fifty" to "50")
+    private const val HOURW = "(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    private const val MINW = "(o five|forty five|forty-five|fifteen|twenty|thirty|forty|fifty|ten)"
+    private const val AMPM = "(?=\\s*(?:am|pm|a\\.m|p\\.m|o'clock|oclock|in the|tonight|tomorrow|today|$))"
+
+    /**
+     * Spoken clock times to digits, so the time parser sees one form: "two thirty pm" -> "2:30 pm",
+     * "at five" -> "at 5", "6 30 pm" -> "6:30 pm", "half past 4" -> "4:30", "quarter to 5" -> "4:45".
+     */
+    private fun clockWords(input: String): String {
+        var s = input
+        s = s.replace(Regex("\\bhalf past (\\d{1,2}|$HOURW)\\b")) { m -> "${hour(m.groupValues[1])}:30" }
+        s = s.replace(Regex("\\bquarter past (\\d{1,2}|$HOURW)\\b")) { m -> "${hour(m.groupValues[1])}:15" }
+        s = s.replace(Regex("\\bquarter to (\\d{1,2}|$HOURW)\\b")) { m -> "${(hour(m.groupValues[1]) + 11) % 12 + 1}:45" }
+        s = s.replace(Regex("\\b$HOURW $MINW$AMPM")) { m -> "${HOUR_WORDS[m.groupValues[1]]}:${MINUTE_WORDS[m.groupValues[2]]}" }
+        s = s.replace(Regex("\\b(\\d{1,2}) $MINW$AMPM")) { m -> "${m.groupValues[1]}:${MINUTE_WORDS[m.groupValues[2]]}" }
+        s = s.replace(Regex("\\b$HOURW$AMPM")) { m -> HOUR_WORDS[m.groupValues[1]].toString() }
+        s = s.replace(Regex("\\b(at|by|around) $HOURW\\b")) { m -> "${m.groupValues[1]} ${HOUR_WORDS[m.groupValues[2]]}" }
+        s = s.replace(Regex("\\b(\\d{1,2}) (\\d{2})(?=\\s*(?:am|pm|a\\.m|p\\.m)\\b)"), "$1:$2")
+        return s
+    }
+
+    private fun hour(w: String) = w.toIntOrNull() ?: HOUR_WORDS[w] ?: 0
 
     fun isQuestionMarked(raw: String): Boolean = raw.trim().endsWith("?")
 

@@ -27,7 +27,7 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
     private var recognizer: SpeechRecognizer? = null
 
     /** One way of listening. Tried in order until one works; the one that worked is tried first next time. */
-    private enum class Way { ON_DEVICE, SERVICE_OFFLINE, SERVICE_ONLINE, SYSTEM_DEFAULT }
+    private enum class Way { SERVICE_ONLINE, ON_DEVICE, SYSTEM_DEFAULT }
     private data class Attempt(val way: Way, val lang: String)
     private var plan: List<Attempt> = emptyList()
     private var step = 0
@@ -43,14 +43,16 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
 
     override fun cancel() = main.post { recognizer?.cancel() }.let { }
 
+    /**
+     * Google's own recognizer first (most accurate; uses the network when there is one, which never asks to
+     * download anything), then the phone's on-device recognizer, then whatever the system default is.
+     * Kataa never asks the user to download a language pack: if a way needs one, it just moves on.
+     */
     private fun attempts(): List<Attempt> {
         val langs = languages()
         val all = buildList {
+            if (realRecognizer(context) != null) langs.forEach { add(Attempt(Way.SERVICE_ONLINE, it)) }
             if (onDeviceAvailable()) langs.forEach { add(Attempt(Way.ON_DEVICE, it)) }
-            if (realRecognizer(context) != null) {
-                add(Attempt(Way.SERVICE_OFFLINE, langs.first()))
-                langs.forEach { add(Attempt(Way.SERVICE_ONLINE, it)) }
-            }
             langs.forEach { add(Attempt(Way.SYSTEM_DEFAULT, it)) }
         }
         val p = preferred
@@ -76,7 +78,7 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
         Way.ON_DEVICE -> if (Build.VERSION.SDK_INT >= 33) SpeechRecognizer.createOnDeviceSpeechRecognizer(context) else null
         // Never the system default blindly first: once Kataa is the phone's assistant, the default points at
         // Kataa's own placeholder service. Use a real recognizer from another app.
-        Way.SERVICE_OFFLINE, Way.SERVICE_ONLINE -> realRecognizer(context)?.let { SpeechRecognizer.createSpeechRecognizer(context, it) }
+        Way.SERVICE_ONLINE -> realRecognizer(context)?.let { SpeechRecognizer.createSpeechRecognizer(context, it) }
         Way.SYSTEM_DEFAULT -> if (SpeechRecognizer.isRecognitionAvailable(context)) SpeechRecognizer.createSpeechRecognizer(context) else null
     }
 
@@ -85,7 +87,8 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
         putExtra(RecognizerIntent.EXTRA_LANGUAGE, a.lang)
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, a.lang)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, a.way == Way.ON_DEVICE || a.way == Way.SERVICE_OFFLINE)
+        // Never "prefer offline": with Google's recognizer that is what pops up "download English (India)".
+        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
         // Several guesses, so the one that makes sense ("call mom", not "call more") can win.
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
@@ -125,11 +128,8 @@ class AndroidSpeechEngine private constructor(private val context: Context) : Sp
                 // Something broke after the user already spoke (network dropped): don't make them wait on more tries.
                 heard -> l.onError(SpeechError.OTHER)
                 else -> {
-                    // This attempt can't listen (language or offline pack missing, recognizer busy or broken, or it
-                    // gave up before listening): ask for the offline English pack if we can, then try the next one.
-                    if (a.way == Way.ON_DEVICE && Build.VERSION.SDK_INT >= 33) {
-                        runCatching { recognizer?.triggerModelDownload(intent(a)) }
-                    }
+                    // This attempt can't listen (no network, language pack missing, recognizer busy or broken, or
+                    // it gave up before listening): quietly try the next one.
                     if (preferred == a) preferred = null
                     main.postDelayed({ next(l) }, if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 250L else 0L)
                 }

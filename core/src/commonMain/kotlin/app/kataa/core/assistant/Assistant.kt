@@ -12,6 +12,8 @@ import app.kataa.core.model.Place
 import app.kataa.core.model.PlaceTarget
 import app.kataa.core.model.Reminder
 import app.kataa.core.model.Source
+import app.kataa.core.mind.Command
+import app.kataa.core.mind.Mind
 import app.kataa.core.nlu.IntentParser
 import app.kataa.core.nlu.MomentMatch
 import app.kataa.core.nlu.ObjectLocation
@@ -29,6 +31,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.minus
 import kotlinx.datetime.plus
+import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Instant
 
@@ -75,6 +78,8 @@ sealed interface Reply {
     data class CategoryCreated(val category: Category) : Reply
     data class CategoryList(val category: Category, val memories: List<Memory>) : Reply
     data class NeedsClarification(val text: String) : Reply
+    /** One sentence held several requests ("remind me to X and my Y is Z"); each got its own reply. */
+    data class Several(val replies: List<Reply>) : Reply
 }
 
 /**
@@ -83,9 +88,110 @@ sealed interface Reply {
  */
 class Assistant(private val core: KataaCore) {
 
+    /**
+     * The on-device language model, once the app has loaded it (null on phones that can't run it, or while
+     * it loads). Rules always go first; the mind is asked only when they are unsure.
+     */
+    @kotlin.concurrent.Volatile var mind: Mind? = null
+
     fun handle(raw: String, ctx: AssistantContext): Reply {
         val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
-        return when (val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone, known)) {
+        val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone, known)
+        val m = mind
+        if (m != null && needsMind(u, raw)) {
+            val commands = runCatching { m.understand(raw, today(ctx)) }.getOrNull()
+            if (commands != null && commands != listOf(Command.Unclear)) return run(commands, raw, ctx)
+        }
+        val reply = byRules(u, raw, ctx)
+        // Nothing found: maybe it was misheard ("facebook passport"). Let the mind restate the question once.
+        if (m != null && reply is Reply.NotFound && (u as? Understanding.Ask)?.type == QuestionType.GENERAL) {
+            val again = runCatching { m.understand(raw, today(ctx)) }.getOrNull()?.singleOrNull() as? Command.Ask
+            if (again != null && Text.normalize(again.text) != Text.normalize(raw)) {
+                val second = askText(again.text, ctx)
+                if (second !is Reply.NotFound) return second
+            }
+        }
+        return reply
+    }
+
+    /** Rules only, never the mind: used for the mind's own rewritten commands, so they can't loop. */
+    private fun handleByRules(raw: String, ctx: AssistantContext): Reply {
+        val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
+        return byRules(IntentParser.parse(raw, ctx.nowMs, ctx.timeZone, known), raw, ctx)
+    }
+
+    private fun run(commands: List<Command>, raw: String, ctx: AssistantContext): Reply {
+        val replies = commands.filter { it != Command.Unclear }.map { c ->
+            when (c) {
+                is Command.Save -> {
+                    val u = IntentParser.parse(c.text, ctx.nowMs, ctx.timeZone)
+                    if (u is Understanding.Save) save(c.text, u, ctx) else saveAsNote(c.text, ctx)
+                }
+                is Command.Remind -> handleByRules(keepUsersTime(c.text, raw, commands.count { it is Command.Remind } == 1, ctx), ctx)
+                is Command.Ask -> askText(c.text, ctx)
+                is Command.Place -> savePlace(raw, Understanding.SavePlace(c.name, explicit = true), ctx)
+                Command.Undo -> undo()
+                Command.Unclear -> Reply.NeedsClarification(raw)
+            }
+        }
+        return when (replies.size) {
+            0 -> Reply.NeedsClarification(raw)
+            1 -> replies.single()
+            else -> Reply.Several(replies)
+        }
+    }
+
+    /**
+     * The small model is good at splitting and cleaning sentences but sloppy with dates ("day after tomorrow"
+     * comes back as "tomorrow"). When the user's own words had a time the rules can read, that time wins.
+     */
+    private fun keepUsersTime(command: String, raw: String, onlyReminder: Boolean, ctx: AssistantContext): String {
+        if (!onlyReminder) return command
+        val said = Text.normalize(raw)
+        val users = TimeParser.parse(said, ctx.nowMs, ctx.timeZone) ?: return command
+        if (users.timeWasDefaulted) return command
+        val cmd = Text.normalize(command)
+        val mine = TimeParser.parse(cmd, ctx.nowMs, ctx.timeZone)
+        val stripped = if (mine != null && mine.range.last < cmd.length) cmd.removeRange(mine.range).replace(Regex("\\s+"), " ").trim() else cmd
+        return "$stripped ${said.substring(users.range.first, users.range.last + 1)}"
+    }
+
+    /** The day from [rules] (it read the user's own words) with the time of day from [mind], when rules had none. */
+    private fun mergeTimes(rules: app.kataa.core.nlu.TimeMatch?, mind: app.kataa.core.nlu.TimeMatch?, ctx: AssistantContext): app.kataa.core.nlu.TimeMatch? {
+        if (rules == null) return mind
+        if (mind == null || !rules.timeWasDefaulted) return rules
+        val day = rules.fireAt.toLocalDateTime(ctx.timeZone).date
+        val clock = mind.fireAt.toLocalDateTime(ctx.timeZone).time
+        return rules.copy(fireAt = kotlinx.datetime.LocalDateTime(day, clock).toInstant(ctx.timeZone), timeWasDefaulted = false)
+    }
+
+    private fun askText(text: String, ctx: AssistantContext): Reply {
+        val u = IntentParser.parse(text, ctx.nowMs, ctx.timeZone)
+        return ask(u as? Understanding.Ask ?: Understanding.Ask(Text.normalize(text), QuestionType.GENERAL, null), ctx)
+    }
+
+    /** When the fast rules are probably not enough: long, multi-part, vague or unrecognized sentences. */
+    private fun needsMind(u: Understanding, raw: String): Boolean {
+        val text = Text.normalize(raw)
+        val words = text.split(' ').count { it.isNotBlank() }
+        return when (u) {
+            is Understanding.Unclear -> words >= 1
+            is Understanding.Save -> u.kind == MemoryKind.NOTE && (words >= 8 || MULTI.containsMatchIn(text) || HINTS.containsMatchIn(text))
+            is Understanding.Remind -> (u.time == null && u.moment == null && words >= 6) ||
+                (u.time?.timeWasDefaulted == true && TIMEISH.containsMatchIn(text)) || MULTI.containsMatchIn(text)
+            else -> false
+        }
+    }
+
+    private fun today(ctx: AssistantContext): String {
+        val d = Instant.fromEpochMilliseconds(ctx.nowMs).toLocalDateTime(ctx.timeZone)
+        val day = d.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+        val month = d.month.name.lowercase().replaceFirstChar { it.uppercase() }
+        return "$day, ${d.day} $month ${d.year}, ${Describe.clock(d.hour, d.minute)}"
+    }
+
+    private fun byRules(u: Understanding, raw: String, ctx: AssistantContext): Reply {
+        return when (u) {
             is Understanding.Save -> save(raw, u, ctx)
             is Understanding.Remind -> remind(raw, u, ctx)
             is Understanding.Ask -> ask(u, ctx)
@@ -167,8 +273,20 @@ class Assistant(private val core: KataaCore) {
             // "no", "skip", "just save it": keep it as a to-do without a time.
             if (NO_TIME.matches(text)) return Reply.Saved(memory)
             val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
-            val time = TimeParser.parse(text, ctx.nowMs, ctx.timeZone)
-            val moment = PlaceParser.parse(text, known) ?: if (time == null) bareMoment(text) else null
+            var time = TimeParser.parse(text, ctx.nowMs, ctx.timeZone)
+            var moment = PlaceParser.parse(text, known)
+            if ((time == null && moment == null) || (time?.timeWasDefaulted == true && TIMEISH.containsMatchIn(text))) {
+                // "sometime next week", "when I'm done with work": the mind turns it into a clear time.
+                val remind = mind?.let { m ->
+                    runCatching { m.understand("remind me to ${memory.body} $raw", today(ctx)) }.getOrNull()?.firstOrNull() as? Command.Remind
+                }
+                if (remind != null) {
+                    val t = Text.normalize(remind.text)
+                    time = mergeTimes(time, TimeParser.parse(t, ctx.nowMs, ctx.timeZone), ctx)
+                    if (moment == null) moment = PlaceParser.parse(t, known)
+                }
+            }
+            if (time == null && moment == null) moment = bareMoment(text)
             if (time != null || moment != null) return schedule(memory, time, moment, persistent = false, ctx)
         }
         return handle(raw, ctx)
@@ -176,8 +294,14 @@ class Assistant(private val core: KataaCore) {
 
     /** "home", "at big mart", "any pharmacy" said on their own as an answer to "when?". */
     private fun bareMoment(text: String): MomentMatch? {
-        val name = text.removePrefix("at ").removePrefix("in ").trim()
+        val explicit = text.startsWith("at ") || text.startsWith("in ") || text.startsWith("when i ")
+        val name = text.removePrefix("when i reach ").removePrefix("when i get to ").removePrefix("at ").removePrefix("in ").trim()
         if (name.isEmpty() || name.split(' ').size > 4) return null
+        // A bare word is a place only if it names one Kataa knows, or a kind of place; "after lunch" is not.
+        val knownPlace = core.places.findByLabel(Text.stripDeterminers(name)).isNotEmpty() || IntentParser.isHomeWord(name)
+        if (!explicit && !knownPlace && PlaceParser.typeOf(name.removePrefix("any ").trim()) == null &&
+            PlaceRepository.normalizeBrand(name)?.let { b -> core.places.nearest(0.0, 0.0, brand = b, maxDistanceM = 2.1e7, limit = 1).isNotEmpty() } != true
+        ) return null
         val kind = PlaceParser.typeOf(name.removePrefix("any ").trim())
         val ref = if (kind != null) PlaceRef.Kind(kind, name) else PlaceRef.Named(name)
         return MomentMatch.Place(ref, onExit = false, 0 until text.length)
@@ -262,6 +386,19 @@ class Assistant(private val core: KataaCore) {
             }
         }
         val result = core.search.search(u.query, SearchOptions(limit = 5, includePrivate = ctx.privateUnlocked))
+        // With the mind: it reads the closest notes and says which one answers, in a few words.
+        val m = mind
+        if (m != null && result.hits.isNotEmpty()) {
+            val pick = runCatching { m.pickAnswer(u.query, result.hits.map { it.memory.body }) }.getOrNull()
+            if (pick != null && pick.index > 0) {
+                val hit = result.hits[pick.index - 1]
+                return Reply.Answer(pick.answer.ifBlank { hit.memory.body }, hit.memory, emptyList(), result.hits)
+            }
+            if (pick != null) {
+                if (!ctx.privateUnlocked && core.search.search(u.query, SearchOptions(limit = 1, includePrivate = true)).confident) return Reply.NeedsUnlock(u.query)
+                return Reply.NotFound(u.query)
+            }
+        }
         val top = result.hits.firstOrNull()
         if (!result.confident || top == null) {
             if (!ctx.privateUnlocked && core.search.search(u.query, SearchOptions(limit = 1, includePrivate = true)).confident) {
@@ -352,6 +489,9 @@ class Assistant(private val core: KataaCore) {
     companion object {
         private const val LAST_KEY = "assistant_last_memory_id"
         private const val CORRECTION_WINDOW_MS = 30 * 60 * 1000L
+        private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
+        private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
+        private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")
         private val NO_TIME = Regex("^(?:no|nope|nah|no thanks|no thank you|skip|skip it|nothing|no time|not now|never mind|nevermind|just save it|just save|save it|later|i will decide later|do not remind me|no need|it is fine|fine|ok|okay|leave it)$")
         private val LOCATION_ONLY = Regex("^(?:in|inside|on|under|behind|beside|next to|near|by|at|in front of|on top of|with)\\b")
     }

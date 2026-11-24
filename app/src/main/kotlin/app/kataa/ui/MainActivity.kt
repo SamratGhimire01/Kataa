@@ -50,6 +50,7 @@ import app.kataa.core.model.ReminderType
 import app.kataa.core.session.KataaState
 import app.kataa.core.session.SpeechError
 import app.kataa.triggers.Triggers
+import app.kataa.data.MindProvider
 import app.kataa.voice.AndroidSpeechEngine
 import app.kataa.voice.Speaker
 import kotlinx.coroutines.CoroutineScope
@@ -116,6 +117,12 @@ class MainActivity : ComponentActivity() {
     private var insetTop = 0
     private var insetBottom = 0
     private val autoClose = Runnable { session.dismiss() }
+    private val thinkingHint = Runnable {
+        if (lastState is KataaState.Thinking) {
+            sub.text = "Thinking…"; sub.alpha = 0f; sub.translationY = 0f
+            sub.animate().alpha(1f).setDuration(500).start()
+        }
+    }
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) startTalking() else showMessage("Kataa needs the microphone to hear you. You can type instead.", typeLink = true)
@@ -185,6 +192,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshHome()
+        app.ensureMind()
     }
 
     override fun onDestroy() {
@@ -412,8 +420,11 @@ class MainActivity : ComponentActivity() {
                 if (scene != Scene.TALK) { resetTalk(); go(Scene.TALK) }
                 nebula.setState(NebulaView.State.THINK)
                 setSaid(s.heard, dim = false)
+                // The on-device AI can take a few seconds on hard sentences: say so instead of looking stuck.
+                main.removeCallbacks(thinkingHint)
+                main.postDelayed(thinkingHint, 1200)
             }
-            is KataaState.Done -> showReply(s.heard, s.reply)
+            is KataaState.Done -> { main.removeCallbacks(thinkingHint); if (sub.text == "Thinking…") sub.text = ""; showReply(s.heard, s.reply) }
             is KataaState.Failed -> when (s.error) {
                 SpeechError.NO_SPEECH -> session.dismiss()
                 SpeechError.NO_PERMISSION -> { session.dismiss(); micPermission.launch(Manifest.permission.RECORD_AUDIO) }
@@ -429,6 +440,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun resetTalk() {
+        main.removeCallbacks(thinkingHint)
         shine.hide(); sub.text = ""; sub.alpha = 0f; snap.visibility = View.INVISIBLE; said.alpha = 1f; said.text = ""
     }
 
@@ -437,20 +449,33 @@ class MainActivity : ComponentActivity() {
         said.text = text
     }
 
-    private fun showReply(heard: String, r: Reply) {
-        if (Look.speakReplies(this)) speaker.say(ReplyText.of(r))
+    private fun showReply(heard: String, r: Reply, speak: Boolean = true) {
+        if (speak && Look.speakReplies(this)) speaker.say(ReplyText.of(r))
         when (r) {
             is Reply.Answer -> showAnswer(heard, r.memory, r.shortAnswer)
             is Reply.DidIAnswer -> showDidI(heard, r)
             is Reply.Saved -> done("Saved", r.memory.body, offerPhoto = r.memory.takeIf { it.kind == MemoryKind.OBJECT_LOCATION })
             is Reply.AlreadySaved -> done("Already saved", r.memory.body)
+            is Reply.Several -> {
+                // One sentence, several things: show an answer if one was asked, else one "Done" for all.
+                val answer = r.replies.firstOrNull { it is Reply.Answer || it is Reply.NeedsUnlock || it is Reply.NotFound }
+                if (answer != null) showReply(heard, answer, speak = false)
+                else done("All set", r.replies.joinToString("\n") { ReplyText.of(it) })
+                return
+            }
             is Reply.Replaced -> done("Updated", r.memory.body)
             is Reply.NeedsTime, is Reply.NeedsPlace -> {
                 // Kataa asked a question: listen for the answer without another tap.
                 showMessage(ReplyText.of(r), keepOpen = true)
                 main.postDelayed({ if (lastState is KataaState.Done && scene == Scene.TALK) startTalking() }, if (Look.speakReplies(this)) 2600L else 1200L)
             }
-            is Reply.ReminderSet -> done("Reminder set", "${r.memory.body}. ${r.description}." + (r.hint?.let { "\n$it" } ?: ""))
+            is Reply.ReminderSet -> {
+                val needsPlace = r.reminders.any { it.placeTarget != null } &&
+                    (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED ||
+                        (Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED))
+                val permHint = if (needsPlace) "\nTurn on location in Settings > Allow reminders (pick \"Allow all the time\") so this can ring." else ""
+                done("Reminder set", "${r.memory.body}. ${r.description}." + (r.hint?.let { "\n$it" } ?: "") + permHint)
+            }
             is Reply.PlaceSaved -> done("Place saved", ReplyText.of(r))
             is Reply.Corrected -> done("Fixed", r.after.body)
             is Reply.Undone -> done("Deleted", r.memory.body)
@@ -857,6 +882,32 @@ class MainActivity : ComponentActivity() {
                 setOnCheckedChangeListener { _, on -> Look.setSpeakReplies(this@MainActivity, on) }
             })
         }, LinearLayout.LayoutParams(-1, ui.dpi(52f)))
+        sectionTitle("Smart mode")
+        val mindNow = app.mind
+        val mindDetail = ui.text(13.5f, 500, look.dim)
+        fun mindText() = when {
+            !Look.smartMode(this) -> "Off. Kataa uses only its fast rules."
+            mindNow.unsupportedReason() != null -> "Not available: ${mindNow.unsupportedReason()}."
+            mindNow.status == MindProvider.Status.READY -> "On. The AI on your phone handles long or unclear sentences and picks the best answer. Nothing leaves your phone."
+            mindNow.status == MindProvider.Status.FAILED -> "Couldn't start the AI on this phone."
+            else -> "Starting the AI…"
+        }
+        mindDetail.text = mindText()
+        list.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            addView(ui.text(16f, 600).apply { text = "On-device AI" }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(Switch(this@MainActivity).apply {
+                isChecked = Look.smartMode(this@MainActivity)
+                thumbTintList = android.content.res.ColorStateList.valueOf(look.accent)
+                setOnCheckedChangeListener { _, on ->
+                    Look.setSmartMode(this@MainActivity, on)
+                    if (on) app.ensureMind() else mindNow.unload()
+                    mindDetail.text = mindText()
+                }
+            })
+        }, LinearLayout.LayoutParams(-1, ui.dpi(52f)))
+        list.addView(mindDetail, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dpi(8f) })
+        if (mindNow.status == MindProvider.Status.LOADING) main.postDelayed({ if (scene == Scene.SETTINGS) mindDetail.text = mindText() }, 4000)
         sectionTitle("Reminders")
         list.addView(settingsRow("Allow reminders", "Notifications, location for store reminders, exact alarms, car Bluetooth") { askReminderPermissions(next = false) })
         list.addView(settingsRow("Car, backups and tools", "Pick your car's Bluetooth, save an encrypted backup, restore") {

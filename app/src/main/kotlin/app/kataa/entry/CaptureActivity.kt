@@ -98,6 +98,7 @@ class CaptureActivity : ComponentActivity() {
         setContentView(root)
         sheet.animate().translationY(0f).setDuration(650).setInterpolator(Motion.spring).start()
         scope.launch { session.state.collect(::render) }
+        (application as KataaApplication).ensureMind()
         start(intent)
     }
 
@@ -156,6 +157,7 @@ class CaptureActivity : ComponentActivity() {
             is Reply.Saved -> "Saved"
             is Reply.AlreadySaved -> "Already saved"
             is Reply.Replaced -> "Updated"
+            is Reply.Several -> if ((s.reply as Reply.Several).replies.none { it is Reply.Answer }) "All set" else null
             is Reply.ReminderSet -> "Reminder set"
             is Reply.PlaceSaved -> "Place saved"
             is Reply.Corrected -> "Fixed"

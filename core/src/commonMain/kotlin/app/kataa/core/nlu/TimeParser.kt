@@ -22,7 +22,7 @@ data class TimeMatch(
     val rrule: String?,
     /** Character range in the normalized text, so callers can remove it from the reminder body. */
     val range: IntRange,
-    /** True when the user gave no clock time and a default was used ("tomorrow" -> 9:00). */
+    /** True when the user gave no time of day at all and the default was used ("tomorrow" -> 9:00). */
     val timeWasDefaulted: Boolean,
 )
 
@@ -45,7 +45,7 @@ object TimeParser {
         "may" to 5, "june" to 6, "jun" to 6, "july" to 7, "jul" to 7, "august" to 8, "aug" to 8, "september" to 9,
         "sep" to 9, "sept" to 9, "october" to 10, "oct" to 10, "november" to 11, "nov" to 11, "december" to 12, "dec" to 12,
     )
-    private val PARTS = mapOf("morning" to 9, "afternoon" to 14, "evening" to 18, "night" to 21, "tonight" to 20, "noon" to 12, "lunch" to 13)
+    private val PARTS = mapOf("morning" to 9, "afternoon" to 14, "evening" to 18, "night" to 21, "tonight" to 20, "noon" to 12, "lunch" to 13, "after lunch" to 14, "breakfast" to 8, "after breakfast" to 9, "dinner" to 20, "after dinner" to 21, "before bed" to 22, "bedtime" to 22)
     private val BYDAY = mapOf(
         DayOfWeek.MONDAY to "MO", DayOfWeek.TUESDAY to "TU", DayOfWeek.WEDNESDAY to "WE", DayOfWeek.THURSDAY to "TH",
         DayOfWeek.FRIDAY to "FR", DayOfWeek.SATURDAY to "SA", DayOfWeek.SUNDAY to "SU",
@@ -56,10 +56,11 @@ object TimeParser {
     private const val MONTHNAME = "(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)"
     private const val CLOCK = "(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm|a\\.m|p\\.m|o'clock|oclock)?"
 
-    private val RELATIVE = Regex("\\bin (?:(?:a )?$NUM\\s*(?:of )?)?(minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\\b")
+    private val RELATIVE = Regex("\\b(?:in|after|within) (?:(?:a )?$NUM\\s*(?:of )?)?(minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)(?: (?:from now|later|time))?\\b|\\b$NUM (minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?) (?:from now|later|from today)\\b")
+    private val PART_ALONE = Regex("\\b(?:in the|this) (morning|afternoon|evening)\\b|\\bat night\\b|\\b(after lunch|after breakfast|after dinner|before bed|bedtime|(?:at|before|during) (?:lunch|breakfast|dinner))\\b")
     private val HALF_HOUR = Regex("\\bin (?:half an hour|half hour|30 min(?:ute)?s?)\\b")
     private val RECURRING = Regex("\\b(?:every|each) (day|morning|afternoon|evening|night|week|month|weekday|weekdays|$DAYNAME)\\b|\\b(daily|weekly|monthly|on weekdays)\\b")
-    private val AT_CLOCK = Regex("\\b(?:at|by|around) $CLOCK\\b|\\b(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm)\\b|\\b(?:at|by|around) (noon|midnight|lunch)\\b")
+    private val AT_CLOCK = Regex("\\b(?:at|by|around) $CLOCK\\b|\\b(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm)\\b|\\b(?:at|by|around) (noon|midnight|lunch)\\b|\\b(\\d{1,2}):(\\d{2})\\b")
     private val DAY_WORD = Regex("\\b(day after tomorrow|tomorrow|today|tonight|this (?:morning|afternoon|evening)|next week|this weekend|next weekend)(?: (morning|afternoon|evening|night))?\\b")
     private val WEEKDAY = Regex("\\b(?:on |this |next |coming )?$DAYNAME(?: (morning|afternoon|evening|night))?\\b")
     private val DATE_DM = Regex("\\b(?:on )?(?:the )?(\\d{1,2})(?:st|nd|rd|th)?(?: of)? $MONTHNAME\\b")
@@ -71,21 +72,24 @@ object TimeParser {
         val local = now.toLocalDateTime(tz)
         val spans = mutableListOf<IntRange>()
 
-        // 1) Relative offsets: "in 2 hours", "in half an hour".
+        // 1) Relative offsets: "in 2 hours", "in half an hour", "after 20 days", "3 weeks from now".
         HALF_HOUR.find(text)?.let {
             return TimeMatch(now + kotlin.time.Duration.parse("30m"), null, it.range, false)
         }
+        var relDate: LocalDate? = null
         RELATIVE.find(text)?.let { m ->
-            val n = m.groupValues[1].takeIf { it.isNotEmpty() }?.let(Text::numberValue) ?: 1
-            val unit = m.groupValues[2]
-            val at = when {
-                unit.startsWith("min") -> now + kotlin.time.Duration.parse("${n}m")
-                unit.startsWith("h") -> now + kotlin.time.Duration.parse("${n}h")
-                unit.startsWith("day") -> local.date.plus(n, DateTimeUnit.DAY).atTime(local.time).toInstant(tz)
-                unit.startsWith("week") -> local.date.plus(n * 7, DateTimeUnit.DAY).atTime(local.time).toInstant(tz)
-                else -> local.date.plus(n, DateTimeUnit.MONTH).atTime(local.time).toInstant(tz)
+            val numStr = m.groupValues[1].ifEmpty { m.groupValues[3] }
+            val unit = m.groupValues[2].ifEmpty { m.groupValues[4] }
+            val n = numStr.takeIf { it.isNotEmpty() }?.let(Text::numberValue) ?: 1
+            when {
+                unit.startsWith("min") -> return TimeMatch(now + kotlin.time.Duration.parse("${n}m"), null, m.range, false)
+                unit.startsWith("h") -> return TimeMatch(now + kotlin.time.Duration.parse("${n}h"), null, m.range, false)
+                unit.startsWith("day") -> relDate = local.date.plus(n, DateTimeUnit.DAY)
+                unit.startsWith("week") -> relDate = local.date.plus(n * 7, DateTimeUnit.DAY)
+                unit.startsWith("month") -> relDate = local.date.plus(n, DateTimeUnit.MONTH)
+                else -> relDate = local.date.plus(n, DateTimeUnit.YEAR)
             }
-            return TimeMatch(at, null, m.range, false)
+            spans += m.range
         }
 
         // 2) Clock time, if any.
@@ -93,6 +97,14 @@ object TimeParser {
         AT_CLOCK.find(text)?.let { m ->
             clock = clockFrom(m)
             if (clock != null) spans += m.range
+        }
+
+        if (relDate != null) {
+            // "after 20 days at 2 pm": that day at that time; with no time, the same time as now.
+            val clk = clock
+            val t = clk ?: if (partOf(text) != null) LocalTime(partOf(text)!!, 0) else local.time
+            val adj = if (clk != null && clk.hour < 12 && !hasAmPm(text)) partOf(text)?.takeIf { it >= 12 }?.let { LocalTime(clk.hour + 12, clk.minute) } ?: clk else t
+            return TimeMatch(LocalDateTime(relDate!!, adj).toInstant(tz), null, spans.minOf { it.first }..spans.maxOf { it.last }, false)
         }
 
         // 3) Recurrence.
@@ -155,12 +167,27 @@ object TimeParser {
             }
         }
 
+        if (partHour == null) PART_ALONE.find(text)?.let { m ->
+            val meal = m.groupValues[2]
+            partHour = if (meal.isNotEmpty()) PARTS[meal] ?: PARTS[meal.substringAfter(' ')] else PARTS[m.groupValues[1].ifEmpty { "night" }]
+            spans += m.range
+        }
         if (clock == null && date == null && rrule == null && partHour == null) return null
 
-        val defaulted = clock == null
+        // "tomorrow evening at 7", "at 7 tonight": a part of the day says which half of the clock.
+        clock?.let { c ->
+            if (c.hour in 1..11 && !hasAmPm(text) && (partHour ?: 0) >= 12) clock = LocalTime(c.hour + 12, c.minute)
+        }
+
+        val defaulted = clock == null && partHour == null
         val time = clock ?: LocalTime(partHour ?: DEFAULT_HOUR, 0)
         var day = date ?: local.date
         var at = LocalDateTime(day, time)
+        // "at 8" said at 9 in the morning means 8 in the evening, if that is still ahead today.
+        if (date == null && rrule == null && clock != null && clock!!.hour in 7..11 && !hasAmPm(text) && at <= local) {
+            val pm = LocalDateTime(day, LocalTime(clock!!.hour + 12, clock!!.minute))
+            if (pm > local) at = pm
+        }
         // A bare clock time already past today means the next occurrence.
         if (date == null && at <= local) {
             day = day.plus(1, DateTimeUnit.DAY)
@@ -179,12 +206,22 @@ object TimeParser {
 
     private const val DEFAULT_HOUR = 9
 
+    private val AMPM_WORD = Regex("\\d\\s*(?:am|pm|a\\.m|p\\.m)\\b")
+    private fun hasAmPm(text: String) = AMPM_WORD.containsMatchIn(text)
+
+    private val PART_WORD = Regex("\\b(morning|afternoon|evening|night|tonight)\\b")
+    private fun partOf(text: String): Int? = PART_WORD.find(text)?.let { PARTS[it.groupValues[1]] }
+
     private fun clockFrom(m: MatchResult): LocalTime? {
         val g = m.groupValues
         g[7].ifEmpty { null }?.let { word ->
             return when (word) { "noon" -> LocalTime(12, 0); "midnight" -> LocalTime(23, 59); else -> LocalTime(13, 0) }
         }
-        val (hStr, minStr, suffix) = if (g[1].isNotEmpty()) Triple(g[1], g[2], g[3]) else Triple(g[4], g[5], g[6])
+        val (hStr, minStr, suffix) = when {
+            g[1].isNotEmpty() -> Triple(g[1], g[2], g[3])
+            g[4].isNotEmpty() -> Triple(g[4], g[5], g[6])
+            else -> Triple(g[8], g[9], "")
+        }
         var h = hStr.toIntOrNull() ?: return null
         val min = minStr.toIntOrNull() ?: 0
         if (h > 23 || min > 59) return null

@@ -16,7 +16,7 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         externalNativeBuild {
-            cmake { arguments += listOf("-DANDROID_STL=none") }
+            cmake { arguments += listOf("-DANDROID_STL=c++_static") }
         }
     }
 
@@ -64,6 +64,10 @@ android {
     // The search model ships inside the APK (scripts/fetch-model.sh puts it in models/).
     sourceSets["main"].assets.directories += rootProject.layout.projectDirectory.dir("models").asFile.path
     androidResources { noCompress += listOf("onnx") }
+    // The on-device AI model (scripts/fetch-llm-model.sh), packaged as an uncompressed, 16 KB aligned
+    // "native library" so it can be memory-mapped straight from the APK. Not an ELF file: never strip it.
+    sourceSets["main"].jniLibs.directories += rootProject.layout.projectDirectory.dir("mind/jni").asFile.path
+    packaging { jniLibs { keepDebugSymbols += "**/libkataa_mind.so" } }
 
     testOptions { unitTests.isIncludeAndroidResources = true }
 

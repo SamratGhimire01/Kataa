@@ -8,6 +8,7 @@ import app.kataa.core.session.KataaSession
 import app.kataa.core.session.KataaState
 import app.kataa.triggers.Triggers
 import app.kataa.data.CoreProvider
+import app.kataa.data.MindProvider
 import app.kataa.voice.AndroidSpeechEngine
 import kotlinx.datetime.TimeZone
 
@@ -19,6 +20,27 @@ class KataaApplication : Application() {
 
     lateinit var cores: CoreProvider
         private set
+
+    /** The on-device AI. Handed to the assistant on the core thread once loaded. */
+    val mind: MindProvider by lazy {
+        MindProvider(this) { m -> cores.worker.execute { runCatching { cores.core.assistant.mind = m } } }
+    }
+
+    /**
+     * Loads the AI if Smart mode is on (no-op when it is loaded, loading, or can't run here). Called only when
+     * the user opens Kataa, never for a background alarm or geofence, so those stay light.
+     */
+    fun ensureMind() {
+        if (app.kataa.ui.Look.smartMode(this) && mind.status == MindProvider.Status.OFF) mind.load()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // The AI is ~1 GB: give it back first when Android needs memory. It reloads when Kataa opens again.
+        @Suppress("DEPRECATION")
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE ||
+            level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) mind.unload()
+    }
 
     /** One conversation state for the whole app: the orb, the power-key overlay and the widget share it. */
     val session: KataaSession by lazy {

@@ -100,7 +100,8 @@ class ReminderActionReceiver : BroadcastReceiver() {
 /** Reboot, app update, clock or time-zone change: the OS forgot our alarms and geofences. */
 class SystemEventsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) = onCore(context) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            intent.action == android.location.LocationManager.PROVIDERS_CHANGED_ACTION) {
             // The OS dropped every geofence: forget what we thought was registered, then re-plan.
             it.cores.core.db.execute("DELETE FROM active_geofences")
         }

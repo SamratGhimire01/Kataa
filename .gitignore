@@ -15,3 +15,6 @@ native/build/
 app/.cxx/
 keystore.properties
 *.jks
+native/llm/llama.cpp/
+/models-cache/
+/mind/

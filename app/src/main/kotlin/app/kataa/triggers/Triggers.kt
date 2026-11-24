@@ -24,9 +24,10 @@ import com.google.android.gms.location.Priority
 object Triggers {
     private const val ALARM_REQUEST = 1001
 
+    /** On app start, boot, update: re-register everything from scratch (the OS may have dropped fences). */
     fun refreshAll(context: Context) {
         refreshAlarm(context)
-        refreshGeofences(context, null)
+        refreshGeofences(context, null, force = true)
     }
 
     fun refreshAlarm(context: Context) {
@@ -48,10 +49,15 @@ object Triggers {
      * without them place reminders still work by "this is Big Mart" while the app is open.
      */
     @SuppressLint("MissingPermission")
-    fun refreshGeofences(context: Context, where: Location?) {
+    fun refreshGeofences(context: Context, where: Location?, force: Boolean = false) {
         if (!hasBackgroundLocation(context)) return
         val app = context.applicationContext as KataaApplication
         val location = where ?: lastLocation(context) ?: return
+        if (force) {
+            // Android drops geofences when location is switched off, on reboot, on update: start clean.
+            app.cores.core.db.execute("DELETE FROM active_geofences")
+            runCatching { LocationServices.getGeofencingClient(context).removeGeofences(geofencePendingIntent(context)) }
+        }
         val plan = app.cores.core.geofences.plan(location.latitude, location.longitude)
         val client = LocationServices.getGeofencingClient(context)
         if (plan.remove.isNotEmpty()) client.removeGeofences(plan.remove)
@@ -71,7 +77,11 @@ object Triggers {
             .setInitialTrigger(0) // no alert for places you are already in when fences are (re)registered
             .addGeofences(fences)
             .build()
-        client.addGeofences(request, geofencePendingIntent(context))
+        client.addGeofences(request, geofencePendingIntent(context)).addOnFailureListener {
+            // Not registered (location off, too many fences...): forget them so the next refresh retries.
+            android.util.Log.w("Kataa", "geofences not added", it)
+            app.cores.worker.execute { runCatching { app.cores.core.db.execute("DELETE FROM active_geofences") } }
+        }
     }
 
     fun geofencePendingIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
@@ -106,11 +116,12 @@ object Triggers {
             ?: com.google.android.gms.tasks.Tasks.await(client.lastLocation, 2, java.util.concurrent.TimeUnit.SECONDS)
     }.getOrNull()
 
+    /** Where the phone is, roughly: the last fix if any (instant), else a quick new one. Runs on the core thread, so never waits long. */
+    @SuppressLint("MissingPermission")
     private fun lastLocation(context: Context): Location? = runCatching {
         val client = LocationServices.getFusedLocationProviderClient(context)
-        val task = client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
-        com.google.android.gms.tasks.Tasks.await(task, 20, java.util.concurrent.TimeUnit.SECONDS)
-            ?: com.google.android.gms.tasks.Tasks.await(client.lastLocation, 5, java.util.concurrent.TimeUnit.SECONDS)
+        com.google.android.gms.tasks.Tasks.await(client.lastLocation, 2, java.util.concurrent.TimeUnit.SECONDS)
+            ?: com.google.android.gms.tasks.Tasks.await(client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null), 6, java.util.concurrent.TimeUnit.SECONDS)
     }.getOrNull()
 
     /** Runs [block] on the core worker and keeps the receiver alive until it finishes. */

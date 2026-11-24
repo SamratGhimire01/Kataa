@@ -3,7 +3,7 @@
 # the host, so tests exercise exactly the C code that ships.
 # Sources: ./scripts/fetch-native-sources.sh
 cmake_minimum_required(VERSION 3.22)
-project(kataa_sqlite C)
+project(kataa_sqlite C CXX)
 
 set(TP ${CMAKE_CURRENT_LIST_DIR}/third_party)
 if(NOT EXISTS ${TP}/sqlcipher/sqlite3.c)
@@ -55,4 +55,10 @@ if(ANDROID)
   target_link_options(kataa_sqlite PRIVATE -Wl,-z,max-page-size=16384)
 else()
   target_link_libraries(kataa_sqlite PRIVATE m pthread)
+endif()
+
+# The on-device language model (Kataa's "mind"): 64-bit only; 32-bit phones lack the memory and speed for it.
+if(ANDROID AND (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "x86_64") AND EXISTS ${CMAKE_CURRENT_LIST_DIR}/llm/llama.cpp/CMakeLists.txt)
+  enable_language(CXX)
+  add_subdirectory(llm)
 endif()

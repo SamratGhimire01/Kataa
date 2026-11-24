@@ -23,5 +23,6 @@ object ReplyText {
         is Reply.CategoryCreated -> "Made a new category: ${r.category.name}."
         is Reply.CategoryList -> if (r.memories.isEmpty()) "Nothing in ${r.category.name} yet." else "${r.memories.size} in ${r.category.name}."
         is Reply.NeedsClarification -> "Should I save that, or search for it?"
+        is Reply.Several -> r.replies.joinToString(" ") { of(it) }
     }
 }

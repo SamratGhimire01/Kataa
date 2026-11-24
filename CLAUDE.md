@@ -20,6 +20,11 @@ Plan, decisions and phases: `docs/BLUEPRINT.md`. User research: `docs/RESEARCH_f
 - `./scripts/build-native-host.sh` (needs cmake + ninja) builds the native database for tests. When it is built,
   tests use it; `-Pkataa.driver=jdbc` forces sqlite-jdbc instead.
 - Android: SDK at `local.properties` `sdk.dir`, NDK 30.0.16248370, platform 37. `./gradlew :app:assembleRelease`.
+- On-device AI ("mind", optional): `./scripts/fetch-llama.sh` (pinned llama.cpp) and `./scripts/fetch-llm-model.sh`
+  (Qwen2.5-1.5B Q4_0, ~1 GB, stored as `mind/jni/arm64-v8a/libkataa_mind.so` so it is packaged uncompressed and
+  page-aligned and memory-mapped from the APK). Host lib for tests:
+  `cmake -S native/llm -B native/build/host-llm -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build native/build/host-llm`.
+  Without them the app and tests still build; `MindModelTest` prints SKIP.
 - `./gradlew :core:jvmTest` runs all tests and the 10k-memory benchmark (prints a `BENCH` line).
 
 ## Rules
@@ -30,4 +35,6 @@ Plan, decisions and phases: `docs/BLUEPRINT.md`. User research: `docs/RESEARCH_f
 - Saving must stay instant: no ML on the save path; embedding/classification run in `KataaCore.processPending()`.
 - Search thresholds are per model (`Embedder.answerThreshold`, `categoryThreshold`), tuned on `SearchEval`. Changing the
   model or search ranking: rerun `SearchQualityTest` and update the numbers. Add failing real queries to `SearchEval`.
+- Rules first, AI second: `Assistant.mind` is only asked when rules are unsure (`needsMind`), and a time the rules
+  read from the user's own words beats the model's (`keepUsersTime`). Never on the save path for clear sentences.
 - Keep the speed budget: median hybrid search over 10k memories < 60 ms in `BenchmarkTest`.

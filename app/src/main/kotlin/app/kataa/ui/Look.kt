@@ -62,5 +62,10 @@ enum class Look(
         fun speakReplies(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("speak", true)
         fun setSpeakReplies(context: Context, on: Boolean) =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("speak", on).apply()
+
+        /** Smart mode: the on-device AI helps with long or unclear sentences and picks answers. On by default. */
+        fun smartMode(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("smart", true)
+        fun setSmartMode(context: Context, on: Boolean) =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("smart", on).apply()
     }
 }
