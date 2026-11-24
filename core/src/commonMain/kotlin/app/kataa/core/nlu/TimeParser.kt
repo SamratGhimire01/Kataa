@@ -79,7 +79,10 @@ object TimeParser {
     private val WEEKDAY = Regex("\\b(?:on |this |next |coming )?$DAYNAME(?: (morning|afternoon|evening|night))?\\b")
     private val DATE_DM = Regex("\\b(?:on )?(?:the )?(\\d{1,2})(?:st|nd|rd|th)?(?: of)? $MONTHNAME\\b")
     private val DATE_MD = Regex("\\b(?:on )?$MONTHNAME (\\d{1,2})(?:st|nd|rd|th)?\\b")
-    private val DATE_D = Regex("\\bon the (\\d{1,2})(?:st|nd|rd|th)\\b|\\bthe (\\d{1,2})(?:st|nd|rd|th)(?= at\\b| by\\b| in the\\b| morning\\b| evening\\b| night\\b|$)")
+    private val HOURS_AND_MINUTES = Regex("\\b(?:in|after) ([a-z0-9]+) (?:hours?|hrs?) (?:and )?([a-z0-9]+) (?:minutes?|mins?)\\b(?: from now| later)?")
+    private val DATE_D = Regex("\\bon the (\\d{1,2})(?:st|nd|rd|th)\\b(?! $NOT_A_DAY)|(?<!\\bfor )\\bthe (\\d{1,2})(?:st|nd|rd|th)(?! $NOT_A_DAY)(?= at\\b| by\\b| in the\\b| morning\\b| evening\\b| night\\b)")
+    /** "on the 3rd floor": an ordinal that is not a day of the month. */
+    private const val NOT_A_DAY = "(?:floor|shelf|drawer|row|room|step|stair|street|lane|house|building|box|cabinet|rack|level|page|place|position|time|gate|door|seat|bench|block|flat|platform)"
 
     fun parse(text: String, nowMs: Long, tz: TimeZone): TimeMatch? {
         val now = Instant.fromEpochMilliseconds(nowMs)
@@ -89,6 +92,12 @@ object TimeParser {
         // 1) Relative offsets: "in 2 hours", "in half an hour", "after 20 days", "3 weeks from now".
         HALF_HOUR.find(text)?.let {
             return TimeMatch(now + kotlin.time.Duration.parse("30m"), null, it.range, false)
+        }
+        // "in 2 hours and 30 minutes".
+        HOURS_AND_MINUTES.find(text)?.let { m ->
+            val h = Text.numberValue(m.groupValues[1]) ?: (if (m.groupValues[1] in setOf("a", "an")) 1 else null)
+            val mins = Text.numberValue(m.groupValues[2])
+            if (h != null && mins != null) return TimeMatch(now + kotlin.time.Duration.parse("${h}h ${mins}m"), null, m.range, false)
         }
         var relDate: LocalDate? = null
         RELATIVE.find(text)?.let { m ->

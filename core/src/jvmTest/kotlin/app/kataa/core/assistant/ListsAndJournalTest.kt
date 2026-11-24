@@ -636,6 +636,33 @@ class ListsAndJournalTest {
         assertTrue(say("i need to clean the kitchen") !is Reply.NotFound)
     }
 
+    @Test fun reviewFindingsPass13() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun body(r: Reply) = core.memories.get(set(r).memoryId)!!.body.trimEnd('.')
+        // 1: "I need to know ..." is a question.
+        assertTrue(say("i need to know where my passport is") !is Reply.Saved)
+        // 2, 3: the "?" leaves the saved password too; "my pin is 1234?" is saved.
+        val wifi = assertIs<Reply.ConfirmSecret>(say("my wifi password is hello123?"))
+        val saved = core.assistant.followUp(wifi, "yes", ctx())
+        assertEquals("My wifi password is hello123", assertIs<Reply.Saved>(saved).memory.body)
+        assertEquals("1234", assertIs<Reply.ConfirmSecret>(say("my pin is 1234?")).value)
+        // 4: a new clock for a weekly reminder stays on its day.
+        val weekly = assertIs<Reply.PickTime>(say("every monday at 7 remind me to take out the trash"))
+        val again = assertIs<Reply.PickTime>(core.assistant.followUp(weekly, "at 9:30", ctx()))
+        assertEquals(listOf("2026-11-30T09:30", "2026-11-30T21:30"), again.options.map { local(it.atMs) })
+        assertEquals("2026-11-30T21:30", local(set(core.assistant.followUp(again, "pm", ctx())).fireAt!!))
+        // 5, 6: ordinals that are not the reminder's day.
+        assertTrue(say("remind me to buy a cake for the 25th").toString().contains("for the 25th"))
+        val floor = say("remind me to water the plants on the 3rd floor at 6 pm")
+        assertEquals("2026-11-24T18:00", local(set(floor).fireAt!!)); assertEquals("Water the plants on the 3rd floor", body(floor))
+        // 7: hours and minutes.
+        val half = say("remind me to call didi in 2 hours and 30 minutes")
+        assertEquals("2026-11-24T10:30", local(set(half).fireAt!!)); assertEquals("Call didi", body(half))
+        // 8: "hey", "ok" before a question.
+        assertTrue(say("hey where is my passport") !is Reply.Saved)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()

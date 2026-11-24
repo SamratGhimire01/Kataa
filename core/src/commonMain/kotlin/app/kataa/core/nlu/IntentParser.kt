@@ -81,7 +81,7 @@ object IntentParser {
     private val DID_I = Regex("^(?:did|have) i (?:already )?(.+?)(?: already)?(?: (today|this morning|tonight|yesterday|this evening))?$")
     private val WHERE = Regex("^where(?: is| are| was| were| did i (?:put|leave|keep|park|hide|place|store|drop)| have i (?:put|left|kept|parked)| do i keep| i put| is it that i (?:put|left))?(?: my| the| our)? (.+?)(?: again| now| at)?$")
     private val WHERE_PARKED = Regex("^where (?:did|have) (?:i|we) park(?:ed)?(?: the car| my car)?(?: again)?$|^where is (?:my |the )?(?:car|parking)$")
-    private val QUESTION_START = Regex("^(?:give me|get me|tell me|show me|send me|i need(?! to\\b)|i want to know|i forgot|i do not remember|remind me what|what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
+    private val QUESTION_START = Regex("^(?:give me|get me|tell me|show me|send me|i need(?! to\\b(?! know\\b))|i want to know|i forgot|i do not remember|remind me what|what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
     private val REMIND_CUE = Regex("\\bremind me\\b|^(?:please )?remind (?:to|about)\\b|\\b(?:alert|notify|ping|nudge) me\\b|^(?:remember|do not forget|make sure i|make sure to|do not let me forget) to\\b|^(?:do not let me forget|do not forget|never let me forget)\\b|\\bnag me\\b|\\bkeep reminding me\\b")
     private val OBLIGATION = Regex("\\b(?:i |we )?(?:have to|need to|must|should|got to|gotta|ought to)\\b")
     private val PERSISTENT = Regex("\\b(?:keep reminding me|nag me|until i (?:do it|mark it|say done|finish)|do not let me forget|important|really important|must not forget)\\b")
@@ -112,6 +112,8 @@ object IntentParser {
     private val PW_CHANGED = Regex("^(?:my |the |our )?(.+?) (?:password|passcode|pin|pin code) (?:is |was |has been |got )?(?:changed|updated|reset|now changed) (?:to|into|as) (.+)$|^(?:my |the |our )?(.+?) (?:password|passcode|pin|pin code) is now (.+)$")
     /** "wifi password at home is blue sky 7" -> ("wifi at home", "blue sky 7"). */
     private val PW_AT = Regex("^(?:my |the |our )?((?:[a-z0-9'-]+ )?[a-z0-9'-]+) (?:password|passcode|pin|pin code) ((?:at|in|for) (?:my |the |our )?[a-z0-9'-]+(?: [a-z0-9'-]+)?) (?:is|=) (.+)$")
+    /** "my pin is 1234", "my password is abc123": no service named, so the kind of secret is its name. */
+    private val PW_MY = Regex("^(?:my|our) (password|passcode|pin|pin code) (?:is|=) (.+)$")
     private val PW_BARE = Regex("^(?:the |our )?((?:[a-z0-9'-]+ ){0,2}?[a-z0-9'-]+) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
     /** "change my facebook password to x", "my new facebook password is x". */
     private val PW_CHANGE = Regex("^(?:please )?(?:change|update|set|reset|replace)(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: to| as| into| with|=)? (\\S.*)$|^(?:my |the |our )?new (.+?) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
@@ -262,6 +264,7 @@ object IntentParser {
             }
             ?: PW_SAVE.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
             ?: PW_AT.find(text)?.let { "${it.groupValues[1]} ${it.groupValues[2]}" to it.groupValues[3] }
+            ?: PW_MY.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
             ?: PW_BARE.find(text)?.takeIf { it.groupValues[1] !in setOf("my", "your", "his", "her", "what", "which") }?.let { it.groupValues[1] to it.groupValues[2] }
             ?: return null
         val svc = service.trim().removePrefix("my ").removePrefix("the ").trim()
@@ -291,7 +294,8 @@ object IntentParser {
         val shownService = restoreCase(svc, raw).replaceFirstChar { it.uppercase() }
         val shown = originalCase(v, raw)
         val exact = originalValue(v, raw)
-        val body = if (statement) saveBody(raw).let { b -> if (b.endsWith(shown) && exact.length > shown.length) b + exact.substring(shown.length) else b }
+        val body = if (statement) saveBody(raw).let { b -> if (!exact.endsWith("?")) b.removeSuffix("?").trimEnd() else b }
+            .let { b -> if (b.endsWith(shown) && exact.length > shown.length) b + exact.substring(shown.length) else b }
             else "$shownService password is $exact"
         return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey("$svc password"), null, replacesOld = true,
             secret = Secret(shownService, exact))

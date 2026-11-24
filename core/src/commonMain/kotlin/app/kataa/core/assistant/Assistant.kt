@@ -175,7 +175,7 @@ class Assistant(private val core: KataaCore) {
      */
     private fun splitByRules(raw: String, ctx: AssistantContext): Reply? {
         val text = Text.normalize(raw)
-        val firstIsQuestion = Regex("^(?:what|where|when|which|who|how|is|are|did|do|does)\\b").containsMatchIn(text)
+        val firstIsQuestion = Regex("^(?:what|where|when|which|who|how|is|are|did|do|does)\\b").containsMatchIn(Text.stripFillers(text))
         val split = if (firstIsQuestion && SPLIT_YES_NO.containsMatchIn(text)) Regex("${SPLIT.pattern}|${SPLIT_YES_NO.pattern}") else SPLIT
         if (!split.containsMatchIn(text)) return null
         val parts = text.split(split).map { it.trim() }.filter { it.isNotEmpty() }
@@ -768,10 +768,16 @@ class Assistant(private val core: KataaCore) {
             // A whole new time ("tomorrow at 8 pm"): schedule that instead.
             TimeParser.parse(text, ctx.nowMs, ctx.timeZone)?.let { t ->
                 if (t.alternative == null) return schedule(previous.memory, t, null, previous.persistent, ctx)
-                // "at 9:30": a new clock, still AM or PM: ask again for it.
-                val alt = t.alternative
-                return previous.copy(options = listOf(t.fireAt, alt).sortedBy { it.toEpochMilliseconds() }
-                    .map { TimeOption(it.toEpochMilliseconds(), Describe.time(it, null, ctx)) })
+                // "at 9:30": a new clock, still AM or PM: ask again for it (on the asked day, for a repeat).
+                val tz = ctx.timeZone
+                val times = listOf(t.fireAt, t.alternative).map { it.toLocalDateTime(tz).time }.sortedBy { it.hour }
+                val day = previous.options.minOf { it.atMs }.let { Instant.fromEpochMilliseconds(it).toLocalDateTime(tz).date }
+                val ats = times.map { tm ->
+                    val at = kotlinx.datetime.LocalDateTime(if (previous.rrule != null) day else t.fireAt.toLocalDateTime(tz).date, tm).toInstant(tz).toEpochMilliseconds()
+                    if (at > ctx.nowMs) at else previous.rrule?.let { r -> app.kataa.core.triggers.Recurrence.next(at, r, tz, afterMs = ctx.nowMs) }
+                        ?: (at + 24 * 3600_000L)
+                }
+                return previous.copy(options = ats.sorted().map { ms -> TimeOption(ms, Describe.time(Instant.fromEpochMilliseconds(ms), null, ctx)) })
             }
             return handle(raw, ctx)
         }
