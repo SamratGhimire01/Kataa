@@ -15,6 +15,7 @@ import kotlinx.datetime.plus
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Instant
+import app.kataa.core.triggers.Recurrence
 
 /** A time found in an utterance. */
 data class TimeMatch(
@@ -68,10 +69,10 @@ object TimeParser {
     private val PART_ALONE = Regex("\\b(?:in the|this) (morning|afternoon|evening)\\b|\\bat night\\b|\\b(after lunch|after breakfast|after dinner|before bed|bedtime|(?:at|before|during) (?:lunch|breakfast|dinner))\\b")
     private val HALF_HOUR = Regex("\\bin (?:half an hour|half hour|30 min(?:ute)?s?)\\b")
     /** "every tuesday and thursday", "every mon, wed and fri". */
-    private val MULTI_DAYS = Regex("\\b(?:every|each) $DAYNAME((?:(?:,| and|, and|,and) $DAYNAME)+)\\b")
+    private val MULTI_DAYS = Regex("\\b(?:every|each) $DAYNAME((?:(?:,| and|, and|,and)? $DAYNAME)+)\\b")
     private val YEARLY = Regex("\\b(?:every|each) year\\b|\\b(?:yearly|annually|every birthday)\\b")
     /** "on the 5th", "the 1st of" (with "every month"). */
-    private val MONTHDAY = Regex("\\b(?:on )?the (\\d{1,2})(?:st|nd|rd|th)?(?: day)?(?: of)?(?= every month| each month|\\b)")
+    private val MONTHDAY = Regex("\\b(?:on )?the (\\d{1,2})(?:(?:st|nd|rd|th)(?: day)?(?: of)?| day of| of)\\b")
     private val RECURRING = Regex("\\b(?:every|each) (day|morning|afternoon|evening|night|week|month|weekday|weekdays|$DAYNAME)\\b|\\b(daily|weekly|monthly|on weekdays)\\b")
     private val AT_CLOCK = Regex("\\b(?:at|by|around) $CLOCK\\b|\\b(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm)\\b|\\b(?:at|by|around) (noon|midnight|lunch)\\b|\\b(\\d{1,2}):(\\d{2})\\b")
     private val DAY_WORD = Regex("\\b(day after tomorrow|tomorrow|today|tonight|this (?:morning|afternoon|evening)|next week|this weekend|next weekend)(?: (morning|afternoon|evening|night))?\\b")
@@ -154,6 +155,7 @@ object TimeParser {
                         val n = d.groupValues[1].toInt()
                         if (n in 1..31) {
                             spans += d.range
+                            rrule = "FREQ=MONTHLY;BYMONTHDAY=$n"
                             var y = local.date.year; var mo = local.date.month.number
                             if (n < local.date.day) { mo += 1; if (mo > 12) { mo = 1; y += 1 } }
                             date = runCatching { LocalDate(y, mo, n) }.getOrNull()
@@ -237,15 +239,22 @@ object TimeParser {
             day = day.plus(1, DateTimeUnit.DAY)
             at = LocalDateTime(day, time)
         }
-        // Recurring reminders whose first slot today has passed start at the next slot.
-        if (rrule != null && at <= local) {
-            day = if (rrule!!.startsWith("FREQ=DAILY")) day.plus(1, DateTimeUnit.DAY)
-            else if (rrule!!.startsWith("FREQ=MONTHLY")) day.plus(1, DateTimeUnit.MONTH)
-            else day.plus(7, DateTimeUnit.DAY)
-            at = LocalDateTime(day, time)
-        }
         val range = spans.minOf { it.first }..spans.maxOf { it.last }
         var other: Instant? = null
+        if (rrule != null) {
+            // Repeating: the first slot that matches the rule and is still ahead ("every tuesday and thursday" said on
+            // a Tuesday after the time is Thursday). A bare hour gets the other half too, found the same way.
+            val start = date ?: local.date
+            fun slot(t: LocalTime): LocalDateTime {
+                val a = LocalDateTime(start, t)
+                if (a > local) return a
+                return Recurrence.next(a.toInstant(tz).toEpochMilliseconds(), rrule!!, tz, afterMs = nowMs)
+                    ?.let { Instant.fromEpochMilliseconds(it).toLocalDateTime(tz) } ?: LocalDateTime(start.plus(1, DateTimeUnit.DAY), t)
+            }
+            at = slot(time)
+            if (halfGuessed && partHour == null) slot(otherHalf(time)).takeIf { it != at }?.let { other = it.toInstant(tz) }
+            return TimeMatch(at.toInstant(tz), rrule, range, defaulted, other, spans.toList())
+        }
         if (halfGuessed && partHour == null) {
             var alt = LocalDateTime(at.date, otherHalf(at.time))
             if (date == null && alt <= local) alt = LocalDateTime(alt.date.plus(1, DateTimeUnit.DAY), alt.time)

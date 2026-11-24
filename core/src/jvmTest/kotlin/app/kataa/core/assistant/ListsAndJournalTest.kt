@@ -337,7 +337,7 @@ class ListsAndJournalTest {
         assertEquals("FREQ=DAILY", chosen.rrule)
         // 3: a day of the month.
         val bill = assertIs<Reply.ReminderSet>(say("remind me to pay the electricity bill on the 5th of every month"))
-        assertEquals("Pay the electricity bill", body(bill)); assertEquals("FREQ=MONTHLY", set(bill).rrule)
+        assertEquals("Pay the electricity bill", body(bill)); assertEquals("FREQ=MONTHLY;BYMONTHDAY=5", set(bill).rrule)
         assertTrue(local(set(bill).fireAt!!).startsWith("2026-12-05"), local(set(bill).fireAt!!))
         // 4: several days; every year.
         val yoga = assertIs<Reply.ReminderSet>(say("remind me every tuesday and thursday at 5 pm to go to yoga"))
@@ -354,6 +354,45 @@ class ListsAndJournalTest {
         // 7: "on"/"in" inside an item.
         assertEquals(listOf("Work on the report", "Start the project"), list(say("add work on the report and start the project to my to do list")).items.map { it.body })
         assertEquals("Go to the bank", list(say("add go to the bank to my list")).items.single().body)
+    }
+
+    /** Sixth bug-hunt pass. Said on Tuesday 24 Nov 2026 at 08:00. */
+    @Test fun reviewFindingsPass6() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun body(r: Reply) = core.memories.get(set(r).memoryId)!!.body.trimEnd('.')
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        // 1: complaints never replace the password, typed or spoken.
+        val typed = ctx().copy(source = app.kataa.core.model.Source.TEXT)
+        core.assistant.handle("my wifi password is Sunflower123", typed).let { if (it is Reply.ConfirmSecret) core.assistant.followUp(it, "yes", ctx()) }
+        for (s in listOf("my wifi password is not working since yesterday", "my wifi password is still not working", "my wifi password is wrong again", "my wifi password is too long to type", "my wifi password is now fixed")) {
+            val r = core.assistant.handle(s, typed)
+            assertTrue(r !is Reply.ConfirmSecret && r !is Reply.Replaced, "$s -> $r")
+            assertTrue(say(s) !is Reply.ConfirmSecret, s)
+        }
+        // 2, 3: the next matching slot.
+        assertEquals("2026-11-26T07:00", local(set(say("remind me every tuesday and thursday at 7 am to go to the gym")).fireAt!!))
+        assertEquals("2026-11-25T07:00", local(set(say("remind me every weekday at 7 am to leave")).fireAt!!))
+        assertEquals("2027-11-24T07:00", local(set(say("remind me every year on november 24 at 7 am to renew insurance")).fireAt!!))
+        // 4.
+        val run = say("remind me every mon, wed and fri at 6 pm to run")
+        assertEquals("FREQ=WEEKLY;BYDAY=MO,WE,FR", set(run).rrule); assertEquals("Run", body(run))
+        // 5: the 31st stays the 31st.
+        val salary = set(say("remind me on the 31st of every month to pay salary"))
+        assertEquals("FREQ=MONTHLY;BYMONTHDAY=31", salary.rrule)
+        var at = salary.fireAt!!
+        val seen = (1..4).map { at = app.kataa.core.triggers.Recurrence.next(at, salary.rrule!!, tz)!!; local(at).take(10) }
+        assertEquals(listOf("2026-12-31", "2027-01-31", "2027-02-28", "2027-03-31"), seen)
+        // 6: "the 2 tablets" is not a day.
+        val tabs = say("remind me every month to take the 2 tablets")
+        assertEquals("FREQ=MONTHLY", set(tabs).rrule); assertTrue(body(tabs).contains("2 tablets"), body(tabs))
+        // 7, 8: repeating bare hours offer the right slots.
+        val alarm = assertIs<Reply.PickTime>(say("set an alarm for 6 every weekday"))
+        assertEquals(setOf("2026-11-25T06:00", "2026-11-24T18:00"), alarm.options.map { local(it.atMs) }.toSet())
+        val med = assertIs<Reply.PickTime>(say("remind me every day at 7 to take medicine"))
+        assertEquals(setOf("2026-11-25T07:00", "2026-11-24T19:00"), med.options.map { local(it.atMs) }.toSet())
+        // 9: a new hour wins, and keeps the repeat.
+        val eight = set(core.assistant.followUp(med, "at 8 pm", ctx()))
+        assertEquals("2026-11-24T20:00", local(eight.fireAt!!)); assertEquals("FREQ=DAILY", eight.rrule)
     }
 
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */

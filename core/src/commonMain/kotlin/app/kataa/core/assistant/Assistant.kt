@@ -639,6 +639,13 @@ class Assistant(private val core: KataaCore) {
         }
         if (previous is Reply.PickTime) {
             val text = Text.normalize(raw)
+            // A new hour ("at 8 pm", "tomorrow at 8 pm"): schedule that, keeping the repeat.
+            if (Regex("\\d").containsMatchIn(text)) TimeParser.parse(text, ctx.nowMs, ctx.timeZone)?.takeIf { it.alternative == null }?.let { t ->
+                val fixed = if (t.rrule == null && previous.rrule != null) {
+                    TimeParser.parse("$text ${Describe.rruleWords(previous.rrule)}", ctx.nowMs, ctx.timeZone)?.takeIf { it.rrule != null } ?: t.copy(rrule = previous.rrule)
+                } else t
+                return schedule(previous.memory, fixed, null, previous.persistent, ctx)
+            }
             val pick = when {
                 PICK_FIRST.matches(text) -> previous.options.first()
                 PICK_SECOND.matches(text) -> previous.options.getOrNull(1)

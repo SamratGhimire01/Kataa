@@ -37,7 +37,8 @@ object Recurrence {
                     while (d.dayOfWeek !in days) d = d.plus(1, DateTimeUnit.DAY)
                     d
                 }
-                "MONTHLY" -> nextMonthSameDay(date, prev.date.day)
+                // BYMONTHDAY keeps "the 31st" even after a short month moved one fire to the 30th or 28th.
+                "MONTHLY" -> nextMonthSameDay(date, parts["BYMONTHDAY"]?.toIntOrNull() ?: prev.date.day)
                 // Birthdays and anniversaries; 29 February falls on 28 February in other years.
                 "YEARLY" -> runCatching { kotlinx.datetime.LocalDate(date.year + 1, prev.date.month, prev.date.day) }
                     .getOrElse { kotlinx.datetime.LocalDate(date.year + 1, prev.date.month, 28) }

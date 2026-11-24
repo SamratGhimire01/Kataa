@@ -105,7 +105,9 @@ object IntentParser {
     private val PW_SAVE = Regex("^(?:please )?(?:write|save|note|store|remember|keep|add|put)(?: down)?(?: that)?(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: is| as| =)? (\\S.*)$")
     /** "netflix password is nf2026" without "my". */
     /** "not working", "too long", "the same as before": said about a password, never the password itself. */
-    private val COMPLAINT = Regex("(?:not \\w+(?: \\w+)?|wrong|incorrect|invalid|expired|expiring(?: \\w+){0,2}|changed|changing|reset|too \\w+|very \\w+|so \\w+|really \\w+|case sensitive|(?:the )?same(?: as \\w+(?: \\w+)?)?|weak|strong|long|short|forgotten|lost|locked|blocked|working|correct|right|different|difficult|complicated|hard to \\w+|easy to \\w+|tricky|stupid|annoying|useless|broken|saved|stored|secret|private|hidden|written down|somewhere)")
+    private val COMPLAINT = Regex("(?:not \\w+(?: \\w+)?|wrong|incorrect|invalid|expired|expiring(?: \\w+){0,2}|changed|changing|reset|too \\w+|very \\w+|so \\w+|really \\w+|case sensitive|(?:the )?same(?: as \\w+(?: \\w+)?)?|weak|strong|long|short|forgotten|lost|locked|blocked|working|working again|fixed|correct|right|different|difficult|complicated|hard to \\w+|easy to \\w+|tricky|stupid|annoying|useless|broken|saved|stored|secret|private|hidden|written down|somewhere)")
+    /** "not working since yesterday", "very hard to remember": a complaint, whatever follows. */
+    private val COMPLAINT_START = Regex("^(?:not|still not|no longer|wrong|too|very|expired|expiring|changed but|changed and|fixed|working|hard to|difficult to|easy to|the same as)\\b")
     /** "my netflix password is changed to moonlight", "my gmail password changed to tiger", "... is now Moonlight22". */
     private val PW_CHANGED = Regex("^(?:my |the |our )?(.+?) (?:password|passcode|pin|pin code) (?:is |was |has been |got )?(?:changed|updated|reset|now changed) (?:to|into|as) (.+)$|^(?:my |the |our )?(.+?) (?:password|passcode|pin|pin code) is now (.+)$")
     /** "wifi password at home is blue sky 7" -> ("wifi at home", "blue sky 7"). */
@@ -270,7 +272,7 @@ object IntentParser {
         // "the wifi password is written on the router", "... is on the fridge": where it is, not what it is.
         if (!typed && Regex("^(?:(?:written|stuck|kept|saved|stored|pasted|taped|hidden|noted)(?: down| up)? (?:on|in|at|under|inside|behind|near|by|with|somewhere)|(?:on|in|at|under|inside|behind|near|with|beside|next to|by) [a-z]+|somewhere)\\b").containsMatchIn(v)) return null
         // "my wifi password is not working", "... is wrong", "... is too long": about the password, not the password.
-        if (!typed && COMPLAINT.matches(v)) return null
+        if (!typed && (COMPLAINT.matches(v) || COMPLAINT_START.containsMatchIn(v))) return null
         if (Regex("^(?:to |about )").containsMatchIn(svc)) return null
         if (!statement) {
             // "remember to change the wifi password tomorrow" is a reminder; "write down the password for the locker in
