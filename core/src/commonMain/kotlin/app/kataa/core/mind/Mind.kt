@@ -7,9 +7,10 @@ import kotlinx.serialization.json.Json
 interface LanguageModel {
     /**
      * Answers [user] given [system]. [grammar] (GBNF) constrains the output, so JSON always parses.
-     * Returns null if the model failed. Each [slot] (0 or 1) keeps its own system prompt cached between calls.
+     * Returns null if the model failed or ran past [budgetMs] (0 = no limit). Each [slot] (0 or 1) keeps its own
+     * system prompt cached between calls.
      */
-    fun complete(slot: Int, system: String, user: String, grammar: String?, maxTokens: Int): String?
+    fun complete(slot: Int, system: String, user: String, grammar: String?, maxTokens: Int, budgetMs: Int = 0): String?
 }
 
 /** One thing the user wants, rewritten into a form Kataa's fast rules understand. */
@@ -33,8 +34,14 @@ data class Pick(val index: Int, val answer: String)
  */
 class Mind(private val model: LanguageModel) {
 
+    /**
+     * How long the user may wait for the model, per call. Past it Kataa answers with its rules: the AI is there
+     * to make replies better, never to make them slow. 0 = no limit (tests that measure quality).
+     */
+    @kotlin.concurrent.Volatile var budgetMs: Int = DEFAULT_BUDGET_MS
+
     fun understand(said: String, today: String): List<Command>? {
-        val raw = model.complete(0, UNDERSTAND_SYSTEM, "Today is $today.\nUser said: \"${said.trim().take(400)}\"", UNDERSTAND_GRAMMAR, 120)
+        val raw = model.complete(0, UNDERSTAND_SYSTEM, "Today is $today.\nUser said: \"${said.trim().take(400)}\"", UNDERSTAND_GRAMMAR, 120, budgetMs)
             ?: return null
         val parsed = runCatching { json.decodeFromString<CommandsJson>(raw) }.getOrNull() ?: return null
         return parsed.commands.mapNotNull(::toCommand).take(3).ifEmpty { null }
@@ -50,7 +57,7 @@ class Mind(private val model: LanguageModel) {
     fun pickAnswer(question: String, notes: List<String>): Pick? {
         if (notes.isEmpty()) return null
         val list = notes.take(5).mapIndexed { i, n -> "${i + 1}. ${n.trim().take(300)}" }.joinToString("\n")
-        val raw = model.complete(1, PICK_SYSTEM, "Question: ${question.trim().take(300)}\nNotes:\n$list", PICK_GRAMMAR, 60) ?: return null
+        val raw = model.complete(1, PICK_SYSTEM, "Question: ${question.trim().take(300)}\nNotes:\n$list", PICK_GRAMMAR, 60, budgetMs) ?: return null
         val p = runCatching { json.decodeFromString<PickJson>(raw) }.getOrNull() ?: return null
         if (p.note !in 1..notes.size.coerceAtMost(5)) return Pick(0, "")
         return Pick(p.note, p.answer.trim())
@@ -133,6 +140,8 @@ root ::= "{\"commands\":[" cmd ("," cmd)? ("," cmd)? "]}"
 cmd ::= "\"" ( ("SAVE: " | "REMIND: " | "ASK: " | "PLACE: ") txt | "UNDO" | "UNCLEAR" ) "\""
 txt ::= [^"\\\n] [^"\\\n]*
 """.trim()
+
+        const val DEFAULT_BUDGET_MS = 1500
 
         val PICK_SYSTEM = """
 You answer questions using only the user's own saved notes in a memory app.

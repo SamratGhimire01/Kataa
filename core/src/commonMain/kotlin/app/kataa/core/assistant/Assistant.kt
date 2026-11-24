@@ -392,9 +392,10 @@ class Assistant(private val core: KataaCore) {
             }
         }
         val result = core.search.search(u.query, SearchOptions(limit = 5, includePrivate = ctx.privateUnlocked))
-        // With the mind: it reads the closest notes and says which one answers, in a few words.
+        // With the mind: only when search is unsure (no confident hit, or two hits nearly tied) does it read
+        // the closest notes and say which one answers. A confident search answers at once, without the AI.
         val m = mind
-        if (m != null && result.hits.isNotEmpty()) {
+        if (m != null && result.hits.isNotEmpty() && unsure(result)) {
             val pick = runCatching { m.pickAnswer(u.query, result.hits.map { it.memory.body }) }.getOrNull()
             if (pick != null && pick.index > 0) {
                 val hit = result.hits[pick.index - 1]
@@ -413,6 +414,13 @@ class Assistant(private val core: KataaCore) {
             return Reply.NotFound(u.query)
         }
         return Reply.Answer(shortAnswer(u.type, top.memory, ctx), top.memory, emptyList(), result.hits)
+    }
+
+    /** Search can't decide alone: nothing confident, or the best two are nearly tied. */
+    private fun unsure(result: app.kataa.core.search.SearchResult): Boolean {
+        if (!result.confident) return true
+        val (a, b) = result.hits.getOrNull(0) to result.hits.getOrNull(1)
+        return a != null && b != null && b.score >= a.score * NEAR_TIE
     }
 
     private fun shortAnswer(type: QuestionType, m: Memory, ctx: AssistantContext): String {
@@ -495,6 +503,8 @@ class Assistant(private val core: KataaCore) {
     companion object {
         private const val LAST_KEY = "assistant_last_memory_id"
         private const val CORRECTION_WINDOW_MS = 30 * 60 * 1000L
+        /** Second hit within 8% of the first: let the mind choose between them. */
+        private const val NEAR_TIE = 0.92
         private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
         private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
         private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")

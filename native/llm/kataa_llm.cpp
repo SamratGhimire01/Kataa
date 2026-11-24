@@ -9,6 +9,7 @@
 
 #include <jni.h>
 #include <cstdio>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -127,10 +128,24 @@ std::vector<llama_token> tokenize(Engine * e, const std::string & text) {
     return out;
 }
 
+using Clock = std::chrono::steady_clock;
+
+// A call's time budget: past it, the call gives up and returns nothing, so the app answers with its rules
+// instead of making the user wait. No deadline when budgetMs <= 0.
+struct Deadline {
+    Clock::time_point at;
+    bool on;
+    explicit Deadline(int budgetMs) : at(Clock::now() + std::chrono::milliseconds(budgetMs)), on(budgetMs > 0) {}
+    bool passed() const { return on && Clock::now() >= at; }
+};
+
 // Decodes tokens[from..] at positions from.., in chunks of n_batch. Logits only for the very last token.
-bool feed(Slot * e, const std::vector<llama_token> & tokens, size_t from) {
+// Returns how many tokens are now in the cache: tokens.size() when done, less when the deadline passed
+// (what was read stays cached, so a long system prompt still gets read across calls), -1 on error.
+long feed(Slot * e, const std::vector<llama_token> & tokens, size_t from, const Deadline & dl) {
     const size_t nBatch = llama_n_batch(e->ctx);
     for (size_t i = from; i < tokens.size(); i += nBatch) {
+        if (dl.passed()) return static_cast<long>(i);
         const size_t end = std::min(tokens.size(), i + nBatch);
         llama_batch_ext_clear(e->batch);
         for (size_t j = i; j < end; ++j) {
@@ -139,13 +154,16 @@ bool feed(Slot * e, const std::vector<llama_token> & tokens, size_t from) {
             llama_batch_ext_set_pos(e->batch, idx, &pos);
         }
         llama_batch_ext_set_output_logits(e->batch, static_cast<int32_t>(end - i - 1), end == tokens.size());
-        if (llama_process(e->ctx, LLAMA_PROCESS_TYPE_DECODE, e->batch) != 0) return false;
+        if (llama_process(e->ctx, LLAMA_PROCESS_TYPE_DECODE, e->batch) != 0) return -1;
     }
-    return true;
+    return static_cast<long>(tokens.size());
 }
 
-std::string complete(Engine * eng, int slot, const std::string & system, const std::string & user, const std::string & grammar, int maxTokens) {
+std::string complete(Engine * eng, int slot, const std::string & system, const std::string & user, const std::string & grammar, int maxTokens, int budgetMs) {
+    // The budget starts before waiting for the lock: time spent behind another call counts too.
+    const Deadline dl(budgetMs);
     std::lock_guard<std::mutex> g(eng->lock);
+    if (dl.passed()) return {};
     if (slot < 0 || slot >= kSlots) slot = 0;
     Slot * e = &eng->slots[slot];
     const llama_vocab * vocab = eng->vocab;
@@ -161,7 +179,13 @@ std::string complete(Engine * eng, int slot, const std::string & system, const s
     llama_memory_t mem = llama_get_memory(e->ctx);
     if (!llama_memory_seq_rm(mem, 0, static_cast<llama_pos>(common), -1)) { llama_memory_clear(mem, true); common = 0; }
     e->cached.assign(prompt.begin(), prompt.begin() + static_cast<long>(common));
-    if (!feed(e, prompt, common)) { llama_memory_clear(mem, true); e->cached.clear(); return {}; }
+    const long fed = feed(e, prompt, common, dl);
+    if (fed < 0) { llama_memory_clear(mem, true); e->cached.clear(); return {}; }
+    if (static_cast<size_t>(fed) < prompt.size()) {
+        // Out of time: keep what was read (whole batches, at positions 0..fed-1), drop nothing else.
+        e->cached.assign(prompt.begin(), prompt.begin() + fed);
+        return {};
+    }
     e->cached = prompt;
 
     llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -173,7 +197,9 @@ std::string complete(Engine * eng, int slot, const std::string & system, const s
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
     std::string out;
+    bool late = false;
     for (int i = 0; i < maxTokens && e->cached.size() < nCtx; ++i) {
+        if (dl.passed()) { late = true; break; }
         const llama_token t = llama_sampler_sample(smpl, e->ctx, -1);
         if (llama_vocab_is_eog(vocab, t)) break;
         char piece[256];
@@ -188,7 +214,7 @@ std::string complete(Engine * eng, int slot, const std::string & system, const s
         e->cached.push_back(t);
     }
     llama_sampler_free(smpl);
-    return out;
+    return late ? std::string() : out;  // a cut-off answer is worse than none (half a JSON object)
 }
 
 }  // namespace
@@ -222,10 +248,10 @@ JNIEXPORT jbyteArray JNICALL Java_app_kataa_core_mind_LlamaNative_lastLog(JNIEnv
 }
 
 JNIEXPORT jbyteArray JNICALL Java_app_kataa_core_mind_LlamaNative_complete(JNIEnv * env, jclass, jlong h, jint slot, jbyteArray system,
-                                                                           jbyteArray user, jbyteArray grammar, jint maxTokens) {
+                                                                           jbyteArray user, jbyteArray grammar, jint maxTokens, jint budgetMs) {
     auto * e = reinterpret_cast<Engine *>(h);
     if (!e) return nullptr;
-    return toBytes(env, complete(e, slot, bytes(env, system), bytes(env, user), bytes(env, grammar), maxTokens));
+    return toBytes(env, complete(e, slot, bytes(env, system), bytes(env, user), bytes(env, grammar), maxTokens, budgetMs));
 }
 
 JNIEXPORT void JNICALL Java_app_kataa_core_mind_LlamaNative_free(JNIEnv *, jclass, jlong h) {

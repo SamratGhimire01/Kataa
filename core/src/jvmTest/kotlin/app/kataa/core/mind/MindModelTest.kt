@@ -15,9 +15,10 @@ class MindModelTest {
         val lib = System.getProperty("kataa.llmLib").orEmpty()
         val gguf = System.getProperty("kataa.llmModel").orEmpty()
         if (lib.isEmpty() || gguf.isEmpty()) { println("SKIP mind: no host llm lib or model"); null }
-        else { LlamaNative.load(lib); LlamaModel.open(gguf, threads = 4, fast = true) }
+        else { LlamaNative.load(lib); LlamaModel.open(gguf, threads = 4, fast = false) }
     }
-    private val mind = model?.let(::Mind)
+    // Weight repacking (fast = true) gives garbage on x86 hosts with this llama.cpp build; ARM is checked separately.
+    private val mind = model?.let(::Mind)?.also { it.budgetMs = 0 }
 
     @AfterTest fun close() { model?.close() }
 
@@ -41,6 +42,14 @@ class MindModelTest {
         assertTrue(understand("put the passport in the top shelf of the almirah").single() is Command.Save)
         understand("ok thanks")
         understand("remind me to take my medicine after dinner")
+    }
+
+    /** Past its time budget a call gives up (null), and the next call still works and is correct. */
+    @Test fun budgetStopsSlowCalls() {
+        val m = model ?: return
+        kotlin.test.assertNull(m.complete(1, Mind.PICK_SYSTEM, "Question: wifi\nNotes:\n1. Wifi password is sunflower123", null, 20, budgetMs = 1))
+        val after = Mind(m).apply { budgetMs = 0 }.pickAnswer("what is the wifi password", listOf("Call mom", "Wifi password is sunflower123"))
+        assertEquals(2, after?.index, "$after")
     }
 
     @Test fun picksTheNoteThatAnswers() {

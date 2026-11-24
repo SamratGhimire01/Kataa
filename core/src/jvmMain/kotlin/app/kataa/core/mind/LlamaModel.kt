@@ -15,7 +15,7 @@ object LlamaNative {
     @JvmStatic external fun loadPath(pathUtf8: ByteArray, threads: Int, nCtx: Int, fast: Boolean): Long
     /** Model inside a bigger file (an uncompressed APK asset). Returns -1 when it can't be mapped at that offset. */
     @JvmStatic external fun loadFd(fd: Int, offset: Long, threads: Int, nCtx: Int, fast: Boolean): Long
-    @JvmStatic external fun complete(handle: Long, slot: Int, system: ByteArray, user: ByteArray, grammar: ByteArray?, maxTokens: Int): ByteArray?
+    @JvmStatic external fun complete(handle: Long, slot: Int, system: ByteArray, user: ByteArray, grammar: ByteArray?, maxTokens: Int, budgetMs: Int): ByteArray?
     @JvmStatic external fun free(handle: Long)
     /** Recent llama.cpp warnings and errors (then cleared): why a load failed. */
     @JvmStatic external fun lastLog(): ByteArray?
@@ -27,10 +27,10 @@ object LlamaNative {
  */
 class LlamaModel private constructor(@Volatile private var handle: Long) : LanguageModel, AutoCloseable {
 
-    override fun complete(slot: Int, system: String, user: String, grammar: String?, maxTokens: Int): String? {
+    override fun complete(slot: Int, system: String, user: String, grammar: String?, maxTokens: Int, budgetMs: Int): String? {
         val h = handle
         if (h == 0L) return null
-        return LlamaNative.complete(h, slot, system.encodeToByteArray(), user.encodeToByteArray(), grammar?.encodeToByteArray(), maxTokens)
+        return LlamaNative.complete(h, slot, system.encodeToByteArray(), user.encodeToByteArray(), grammar?.encodeToByteArray(), maxTokens, budgetMs)
             ?.decodeToString()?.takeIf { it.isNotEmpty() }
     }
 
