@@ -52,7 +52,7 @@ object PlaceParser {
     private val BT_AUDIO = Regex("\\b(?:when|once) i (?:put on|connect|plug in|wear) (?:my |the )?(earbuds|earphones|headphones|airpods|buds)\\b")
     private val LEAVE = Regex("\\b(?:when|once|as soon as|before) i (?:leave|exit|go out of|head out of|walk out of)(?: (?:the |my )?$NAME)?$END")
     private val LEAVE_BARE = Regex("\\bbefore i (?:go out|head out|leave)\\b")
-    private val ARRIVE = Regex("\\b(?:when|once|as soon as|next time|whenever|the moment) i (?:get|reach|arrive|am|come|go|walk|enter)(?: (?:to|at|in|into|back to|back at|inside))? (?:the |my )?$NAME$END")
+    private val ARRIVE = Regex("\\b(?:when|once|as soon as|next time|whenever|the moment) i (?:get|reach|arrive|am|come|go|walk|enter)(?: (?:to|at|in|into|back to|back at|inside))? (?:the |my |any |a |an )?$NAME$END")
     private val HERE = Regex("\\b(?:here|this place|this spot)(?: next time)?\\b")
     private val AT = Regex("\\b(?:at|in|from) (?:(any|a|an|the) )?$NAME$END")
 

@@ -451,6 +451,43 @@ class ListsAndJournalTest {
         assertEquals(LocalDate(2026, 11, 23), assertIs<Reply.JournalShown>(say("what did i do on monday")).day.day)
     }
 
+    /** Eighth bug-hunt pass and second QA pass. Said on Tuesday 24 Nov 2026 at 08:00. */
+    @Test fun reviewFindingsPass8() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun answer(q: String, a: String) = core.assistant.followUp(assertIs<Reply.PickTime>(say(q), q), a, ctx())
+        // 1: a day named in the answer wins.
+        assertEquals("2026-11-25T19:13", local(set(answer("remind me to call hari at 7:13", "tomorrow at 7:13 pm")).fireAt!!))
+        assertEquals("2026-11-27T21:00", local(set(answer("remind me to call shyam at 9", "on friday at 9 pm")).fireAt!!))
+        // 2: "7 pm" for 7:13 keeps the minutes.
+        assertEquals("2026-11-24T19:13", local(set(answer("remind me to call didi at 7:13", "7 pm")).fireAt!!))
+        // 3: a new request instead of an answer is its own.
+        val p = assertIs<Reply.PickTime>(say("remind me to water plants at 6"))
+        val milk = set(core.assistant.followUp(p, "remind me to buy milk at 5 pm", ctx()))
+        assertEquals("Buy milk", core.memories.get(milk.memoryId)!!.body.trimEnd('.'))
+        // 4: a statement after "When is it?" is saved as itself.
+        val nf = assertIs<Reply.NotFound>(say("what's my mom's birthday"))
+        val keys = assertIs<Reply.Saved>(core.assistant.followUp(nf, "I put my keys in the drawer", ctx()))
+        assertTrue("birthday" !in keys.memory.body.lowercase(), keys.memory.body)
+        // 5: "any pharmacy" is the kind of place.
+        assertEquals(app.kataa.core.model.PlaceTarget.Type("pharmacy"), set(say("remind me to buy medicine when I get to any pharmacy")).placeTarget)
+        // 6: a request and a question together.
+        val both = assertIs<Reply.Several>(say("remind me to pay rent tomorrow at 9 am and where is my passport"))
+        assertTrue(both.replies.first() is Reply.ReminderSet, "$both")
+        // QA 1: a password is never shown before unlock, however it is asked.
+        core.assistant.handle("my wifi password is Sunflower123", ctx().copy(source = app.kataa.core.model.Source.TEXT))
+        assertIs<Reply.NeedsUnlock>(core.assistant.handle("where is my wifi password", ctx().copy(privateUnlocked = false)))
+        // QA 4: a pinned place beats the kind; someone's own place asks to be pinned.
+        val gym = core.places.save("Gym", 27.7, 85.3, radiusM = 100.0)
+        assertEquals(app.kataa.core.model.PlaceTarget.Specific(gym.id), set(say("remind me to pay the fees when i reach the gym")).placeTarget)
+        assertIs<Reply.NeedsPlace>(say("remind me to give the gift when i reach sita's house"))
+        // QA 5: the timeline from a date back.
+        clock.advanceDays(2.0)
+        val later = core.memories.save(app.kataa.core.model.NewMemory("The car was serviced"))
+        val before = core.memories.before(later.createdAt)
+        assertTrue(before.isNotEmpty() && before.none { it.id == later.id } && before.all { it.createdAt < later.createdAt })
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()

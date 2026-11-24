@@ -230,8 +230,23 @@ class MainActivity : ComponentActivity() {
             }
         })
         go(Scene.HOME, instant = true)
-        scope.launch { session.state.collect(::render) }
         if (intent?.getBooleanExtra(EXTRA_TALK, false) == true) main.postDelayed({ startTalking() }, 350)
+    }
+
+    /**
+     * Only while on screen: in the background the quick-capture sheet answers (no double speaking, no screens
+     * opened from behind). Coming to the front shows the current state, e.g. a card handed over by quick capture.
+     */
+    private var collecting: kotlinx.coroutines.Job? = null
+
+    override fun onStart() {
+        super.onStart()
+        collecting = scope.launch { session.state.collect { if (it !== lastState) render(it) } }
+    }
+
+    override fun onStop() {
+        collecting?.cancel(); collecting = null
+        super.onStop()
     }
 
     override fun onResume() {
@@ -653,11 +668,12 @@ class MainActivity : ComponentActivity() {
 
     private fun showAnswer(heard: String, memory: Memory, short: String) {
         prepareAnswer(heard)
-        bigText.text = short
+        val secret = Secrets.takeIf { it.looksSecret(memory) }?.value(memory.body)
+        // Never a password before unlock, whatever asked for it.
+        bigText.text = if (secret != null && !app.privateUnlocked) "Unlock to see it" else short
         metaText.text = "Saved ${relative(memory.createdAt)}"
         // A password shown after unlock: one tap copies it (marked sensitive, cleared after 30 seconds).
-        val secret = Secrets.takeIf { it.looksSecret(memory) }?.value(memory.body)
-        if (secret != null) {
+        if (secret != null && app.privateUnlocked) {
             copyLabel.text = "Copy password"
             saveIt.visibility = View.VISIBLE; saveIt.alpha = 0f
             saveIt.animate().alpha(1f).setStartDelay(700).setDuration(500).start()
@@ -745,7 +761,7 @@ class MainActivity : ComponentActivity() {
             val next = runCatching {
                 val c = app.cores.core
                 c.reminders.active().sortedBy { it.fireAt ?: Long.MAX_VALUE }.firstOrNull()?.let { r -> c.memories.get(r.memoryId)?.let { r to it } }
-            }.getOrNull()
+            }.onFailure { e -> runOnUiThread { loadFailed(e) } }.getOrNull()
             val line = next?.let { (r, m) -> m.body to whenText(r) }
             runOnUiThread {
                 if (line == null) { nextChip.visibility = View.INVISIBLE; return@runOnUiThread }
@@ -987,7 +1003,7 @@ class MainActivity : ComponentActivity() {
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         list.addView(rows)
         app.cores.worker.execute {
-            val mem = given ?: runCatching { app.cores.core.categories.memoriesIn(cat.id, 100) }.getOrDefault(emptyList())
+            val mem = given ?: runCatching { app.cores.core.categories.memoriesIn(cat.id, 100) }.getOrElse { e -> runOnUiThread { loadFailed(e) }; emptyList() }
             // A password can be filed in an ordinary group too ("Money"): it stays masked until unlock.
             val priv = runCatching { app.cores.core.memories.privateIds(mem.map { it.id }) }.getOrDefault(emptySet())
             runOnUiThread {
@@ -1355,7 +1371,7 @@ class MainActivity : ComponentActivity() {
     private fun fillList(key: String, rows: LinearLayout, progress: TextView) {
         app.cores.worker.execute {
             val today = java.time.LocalDate.now().let { kotlinx.datetime.LocalDate(it.year, it.monthValue, it.dayOfMonth) }
-            val l = runCatching { app.cores.core.lists.view(key, today) }.getOrNull() ?: return@execute
+            val l = runCatching { app.cores.core.lists.view(key, today) }.getOrElse { e -> runOnUiThread { loadFailed(e) }; return@execute }
             runOnUiThread {
                 if (scene != Scene.LIST || shownListKey != key) return@runOnUiThread
                 rows.removeAllViews()
@@ -1498,7 +1514,12 @@ class MainActivity : ComponentActivity() {
             val listDays = runCatching { c.lists.keys().mapNotNull { ListKey.dayOf(it) }.toSet() }.getOrDefault(emptySet())
             val priv = runCatching { c.memories.privateIds(mem.map { it.id }) }.getOrDefault(emptySet())
             val journalIds = mem.filter { runCatching { c.journal.isJournal(it.id) }.getOrDefault(false) }.map { it.id }.toSet()
-            val byDay = mem.take(200).groupBy { java.time.Instant.ofEpochMilli(it.createdAt).atZone(tz).toLocalDate() }
+            val endDay = until?.let(::jDate)
+            val byDay = (mem.take(200).groupBy { java.time.Instant.ofEpochMilli(it.createdAt).atZone(tz).toLocalDate() } +
+                // Days that have only a to-do list show up too.
+                listDays.map(::jDate).filter { d -> endDay == null || !d.isAfter(endDay) }.associateWith { emptyList<Memory>() }
+                    .filterKeys { d -> mem.none { java.time.Instant.ofEpochMilli(it.createdAt).atZone(tz).toLocalDate() == d } })
+                .toSortedMap(compareByDescending { it })
             runOnUiThread {
                 if (scene != Scene.TIMELINE) return@runOnUiThread
                 if (byDay.isEmpty()) { rows.addView(emptyState("Nothing yet", "Everything you save shows up here, by date.")); return@runOnUiThread }

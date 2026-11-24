@@ -125,8 +125,12 @@ class KataaSession(
     fun cancel() {
         listening?.cancel()
         speech?.cancel()
+        awaiting = null // closed without answering: the next sentence is a new one
         _state.value = KataaState.Idle
     }
+
+    /** "Later" on a question card: the next sentence is a new one, not the answer. */
+    fun forget() { awaiting = null }
 
     /** Typed input goes through exactly the same path as speech. */
     fun type(text: String) {

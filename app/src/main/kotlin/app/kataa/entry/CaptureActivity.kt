@@ -200,8 +200,11 @@ class CaptureActivity : ComponentActivity() {
 
     private fun locked() = getSystemService(KeyguardManager::class.java).isKeyguardLocked
 
-    private fun revealsMemories(r: Reply) = r is Reply.Answer || r is Reply.DidIAnswer || r is Reply.CategoryList ||
-        r is Reply.Undone || r is Reply.Corrected || (r is Reply.PlaceSaved && r.errandsHere.isNotEmpty())
+    /** Anything that reads back what the owner saved: answers, the journal, the plan, lists, the timeline. */
+    private fun revealsMemories(r: Reply): Boolean = r is Reply.Answer || r is Reply.DidIAnswer || r is Reply.CategoryList ||
+        r is Reply.Undone || r is Reply.Corrected || (r is Reply.PlaceSaved && r.errandsHere.isNotEmpty()) ||
+        r is Reply.JournalShown || r is Reply.Agenda || r is Reply.TaskListReply || r == Reply.Timeline ||
+        r is Reply.AlreadySaved || r is Reply.Replaced || (r is Reply.Several && r.replies.any(::revealsMemories))
 
     override fun onStop() {
         super.onStop()
