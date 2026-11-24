@@ -109,8 +109,10 @@ object TimeParser {
         // 2) Clock time, if any.
         var clock: LocalTime? = null
         var halfGuessed = false
+        var atMidnight = false
         AT_CLOCK.find(text)?.let { m ->
             clock = clockFrom(m)
+            atMidnight = m.groupValues[7] == "midnight"
             if (clock != null) spans += m.range
             halfGuessed = clock != null && bareHour(m)
         }
@@ -229,7 +231,7 @@ object TimeParser {
         val time = clock ?: LocalTime(partHour ?: DEFAULT_HOUR, 0)
         var day = date ?: local.date
         // "tomorrow at midnight": the midnight at the end of that day.
-        if (date != null && rrule == null && Regex("\\bmidnight\\b").containsMatchIn(text)) { day = day.plus(1, DateTimeUnit.DAY); date = day }
+        if (date != null && rrule == null && atMidnight) { day = day.plus(1, DateTimeUnit.DAY); date = day }
         var at = LocalDateTime(day, time)
         // "at 8" said at 9 in the morning means 8 in the evening, if that is still ahead today.
         if (date == null && rrule == null && clock != null && clock!!.hour in 7..11 && !hasAmPm(text) && (partHour == null || partHour!! >= 12) && at <= local) {

@@ -561,10 +561,9 @@ class Assistant(private val core: KataaCore) {
      */
     private fun pickAnswer(p: Reply.PickTime, text: String, ctx: AssistantContext): Reply? {
         val tz = ctx.timeZone
-        val hours = Regex("\\b(\\d{1,2})(?:[:.](\\d{2}))?\\b").findAll(text).toList().ifEmpty { return null }
+        val (h, minSaid) = clockOf(text) ?: return null
         val options = p.options.map { it to Instant.fromEpochMilliseconds(it.atMs).toLocalDateTime(tz) }
         val am = AM_WORD.containsMatchIn(text); val pm = PM_WORD.containsMatchIn(text)
-        val h = hours.first().groupValues[1].toInt(); val minSaid = hours.first().groupValues[2].toIntOrNull()
         val namesDay = NAMES_DAY.containsMatchIn(text)
         // The asked hour with a half: "7 am", "7 in the evening", "19:00", "7 pm" for 7:13 (the minutes may be left out).
         // Not when a day is named ("tomorrow at 7 pm"): that day wins.
@@ -580,6 +579,9 @@ class Assistant(private val core: KataaCore) {
         // The asked day: the option in the same half of the day as the new hour ("at 8 pm" goes with the 7 pm option).
         val sameHalf = options.firstOrNull { (_, t) -> (t.hour >= 12) == (said.hour >= 12) } ?: options.first()
         var at = if (namesDay) said else kotlinx.datetime.LocalDateTime(sameHalf.second.date, said.time)
+        // "tomorrow at 7 pm" for 7:13: the asked minutes stay.
+        val base = options.first().second
+        if (minSaid == null && at.hour % 12 == base.hour % 12 && at.minute == 0) at = kotlinx.datetime.LocalDateTime(at.date, kotlinx.datetime.LocalTime(at.hour, base.minute))
         val nowLocal = Instant.fromEpochMilliseconds(ctx.nowMs).toLocalDateTime(tz)
         if (at <= nowLocal) {
             at = p.rrule?.let { r -> app.kataa.core.triggers.Recurrence.next(at.toInstant(tz).toEpochMilliseconds(), r, tz, afterMs = ctx.nowMs) }
@@ -598,24 +600,41 @@ class Assistant(private val core: KataaCore) {
         val parsed = TimeParser.parse(text, ctx.nowMs, tz) ?: return null
         val day = parsed.fireAt.toLocalDateTime(tz).date
         val options = p.options.map { it to Instant.fromEpochMilliseconds(it.atMs).toLocalDateTime(tz) }
-        // A different clock ("tomorrow at 8"): that hour; otherwise the asked one.
-        val hourSaid = Regex("\\b(\\d{1,2})(?:[:.](\\d{2}))?\\b").find(text)?.let { it.groupValues[1].toInt() to it.groupValues[2].toIntOrNull() }
+        // A different clock ("tomorrow at 8"): that hour, asked again if the half is unclear; otherwise the asked one.
+        val hourSaid = clockOf(text)
         val base = options.first().second
         val sameHour = hourSaid == null || hourSaid.first % 12 == base.hour % 12 && (hourSaid.second == null || hourSaid.second == base.minute)
-        if (!sameHour) return null
+        val minute = if (sameHour) base.minute else hourSaid!!.second ?: 0
         val am = AM_WORD.containsMatchIn(text); val pm = PM_WORD.containsMatchIn(text)
         val nowLocal = Instant.fromEpochMilliseconds(ctx.nowMs).toLocalDateTime(tz)
-        val halves = listOf(base.hour % 12, base.hour % 12 + 12).map { kotlinx.datetime.LocalDateTime(day, kotlinx.datetime.LocalTime(it, base.minute)) }
-            .filter { it > nowLocal }
+        val hours = if (!sameHour && (hourSaid!!.first == 0 || hourSaid.first > 12)) listOf(hourSaid.first)
+            else (if (sameHour) base.hour else hourSaid!!.first).let { listOf(it % 12, it % 12 + 12) }
+        if (hours.any { it > 23 } || minute > 59) return null
+        val halves = hours.map { kotlinx.datetime.LocalDateTime(day, kotlinx.datetime.LocalTime(it, minute)) }.filter { it > nowLocal }
         fun opt(t: kotlinx.datetime.LocalDateTime) = t.toInstant(tz).let { TimeOption(it.toEpochMilliseconds(), Describe.time(it, null, ctx)) }
         val chosen = when {
             am != pm -> halves.firstOrNull { (it.hour < 12) == am }
             halves.size == 1 -> halves.single()
-            else -> options.filter { it.second.date == day }.singleOrNull()?.second
+            sameHour -> options.filter { it.second.date == day }.singleOrNull()?.second
+            else -> null
         }
         if (chosen != null) return pickTimeOption(p, opt(chosen), ctx)
         if (halves.isEmpty()) return null
         return p.copy(options = halves.map(::opt))
+    }
+
+    /**
+     * The clock in an answer ("7", "7:13", "at 8") as hour and minutes, leaving out the numbers of a date ("in 2 days",
+     * "december 5", "the 26th", "2027").
+     */
+    private fun clockOf(text: String): Pair<Int, Int?>? {
+        val month = "(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+        val s = text.replace(Regex("\\b(?:in|after|for) \\d+ (?:days?|weeks?|months?|years?)\\b"), " ")
+            .replace(Regex("\\b$month (?:the )?\\d{1,2}(?:st|nd|rd|th)?\\b"), " ")
+            .replace(Regex("\\b\\d{1,2}(?:st|nd|rd|th)?(?: of)? $month\\b"), " ")
+            .replace(Regex("\\b\\d{1,2}(?:st|nd|rd|th)\\b|\\b\\d{4}\\b"), " ")
+        val m = Regex("\\b(\\d{1,2})(?:[:.](\\d{2}))?\\b").find(s) ?: return null
+        return m.groupValues[1].toInt() to m.groupValues[2].toIntOrNull()
     }
 
     /** Words left after the time is taken out, other than "remind me", "make it", "the first one" and the like. */
@@ -1045,9 +1064,9 @@ class Assistant(private val core: KataaCore) {
 
     companion object {
         private const val LAST_KEY = "assistant_last_memory_id"
-        private val CANCEL = Regex("^(?:cancel|cancel it|never mind|nevermind|forget it|stop|do not save|do not save it)$")
+        private val CANCEL = Regex("^(?:cancel|cancel it|cancel that|never mind|nevermind|forget it|stop|do not save|do not save it)$")
         private val YES = Regex("^(?:yes|yeah|yep|yup|ya|haan|ho|correct|right|that is right|that is correct|exactly|save it|save|ok|okay|ok save it|sure|confirm|yes save it|yes correct|perfect)$")
-        private val NO = Regex("^(?:no|nope|nah|cancel|do not save|do not save it|forget it|never mind|nevermind|stop|wrong)$")
+        private val NO = Regex("^(?:no|nope|nah|cancel|cancel it|cancel that|do not save|do not save it|forget it|never mind|nevermind|stop|wrong)$")
         private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
         private val MORNING_HINT = Regex("\\b(?:wake|wake up|breakfast|morning|sunrise|before work|before office|before college)\\b")
         private val EVENING_HINT = Regex("\\b(?:dinner|supper|tonight|evening|night|after work|after office|after college|sunset)\\b")
@@ -1073,7 +1092,7 @@ class Assistant(private val core: KataaCore) {
         /** Second hit within 8% of the first: let the mind choose between them. */
         private const val NEAR_TIE = 0.92
         /** Where a second request starts. The lookahead keeps "my"/"the"/"i" with the second part. */
-        private val SPLIT = Regex("\\s(?:and also|and then|and|also|plus)\\s(?=(?:my|the|our|i|remind|also)\\b|(?:what|where|when|which|who|how) (?:is|are|was|were|do|did|does)\\b|did i\\b)")
+        private val SPLIT = Regex("\\s(?:and also|and then|and|also|plus)\\s(?=(?:my|the|our|i|remind|also)\\b|(?:what|where|when|which|who|how) (?:is|are|was|were|do|did|does)\\b|did i\\b|(?:is|are|was|were|does|do|did) (?:it|they|he|she|there|my|the)\\b)")
         private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
         private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
         private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")

@@ -243,7 +243,10 @@ object IntentParser {
 
     /** Every way of saying a password: one current value per service, so a new one replaces the old. */
     private fun password(text: String, raw: String): Understanding.Save? {
-        if (Text.isQuestionMarked(raw) || TRAILING_WHAT.containsMatchIn(text)) return null
+        // "my wifi password is pa$$?": a typed password that ends in "?" is not a question.
+        val endsInValue = Regex("(?i)\\b(?:password|passcode|pin)\\b.*\\s(?:is|=)\\s+\\S*[^A-Za-z\\s?]\\S*\\?$").containsMatchIn(raw.trim()) &&
+            !Regex("^(?:what|which|where|when|who|how|is|are|do|did|does|can|could|have|has)\\b").containsMatchIn(text)
+        if (Text.isQuestionMarked(raw) && !endsInValue || TRAILING_WHAT.containsMatchIn(text)) return null
         val (service, value) = (PW_CHANGED.find(text) ?: PW_CHANGE.find(text))?.let { m ->
             if (m.groupValues[1].isNotEmpty()) m.groupValues[1] to m.groupValues[2] else m.groupValues[3] to m.groupValues[4]
         } ?: PW_FOR_IS.find(text)?.let { it.groupValues[1] to it.groupValues[2] }

@@ -571,6 +571,47 @@ class ListsAndJournalTest {
         assertTrue(core.memories.recent(limit = 400).size <= before)
     }
 
+    @Test fun reviewFindingsPass11() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun body(r: Reply) = core.memories.get(set(r).memoryId)!!.body.trimEnd('.')
+        fun answer(q: String, a: String) = core.assistant.followUp(assertIs<Reply.PickTime>(say(q), q), a, ctx())
+        // 1: "midnight" in the words, not the time.
+        assertEquals("2026-11-25T18:00", local(set(say("remind me to book the midnight bus tomorrow at 6 pm")).fireAt!!))
+        assertEquals("2026-11-27T21:00", local(set(say("remind me to watch the midnight show on friday at 9 pm")).fireAt!!))
+        // 2, 3: compound and "oh" minutes.
+        val pills = say("remind me at seven twenty five pm to take pills")
+        assertEquals("2026-11-24T19:25", local(set(pills).fireAt!!)); assertEquals("Take pills", body(pills))
+        assertEquals("2026-11-24T19:05", local(set(say("remind me at seven oh five pm to call the shop")).fireAt!!))
+        assertEquals("at 7:25", app.kataa.core.nlu.Text.normalize("at seven twenty five"))
+        // 4: quantities after "for" are not clocks.
+        assertEquals("Buy cake for 2 12-year-olds", body(say("remind me to buy cake for 2 12-year-olds tomorrow")))
+        assertEquals("Pay for 3 15 rupee stamps", body(say("remind me tomorrow to pay for 3 15 rupee stamps")))
+        // 5: names that are months.
+        assertTrue(body(say("remind me to call jan first thing tomorrow")).contains("jan first", ignoreCase = true))
+        assertEquals("remind me to tell may first", app.kataa.core.nlu.Text.normalize("remind me to tell may first"))
+        assertEquals("my birthday is on may 1st", app.kataa.core.nlu.Text.normalize("my birthday is on may first"))
+        // 6, 7: passwords with a.m. and a final "?".
+        fun typed(s: String) = core.assistant.handle(s, ctx().copy(source = app.kataa.core.model.Source.TEXT))
+        assertEquals("a.m.7xyz", assertIs<Reply.ConfirmSecret>(say("my gmail password is a.m.7xyz")).value)
+        assertTrue(assertIs<Reply.Saved>(typed("my wifi password is pa\$\$?")).memory.body.endsWith("pa\$\$?"))
+        // 8: "cancel it" on the password card deletes nothing else.
+        say("I put my keys in the drawer")
+        assertEquals(Reply.NotSaved, core.assistant.followUp(assertIs<Reply.ConfirmSecret>(say("my office wifi password is Hello123")), "cancel it", ctx()))
+        assertIs<Reply.Answer>(say("where are my keys"))
+        // 9-11: answers with a day keep or ask the clock.
+        assertEquals("2026-11-25T19:13", local(set(answer("call didi at 7:13", "tomorrow at 7 pm")).fireAt!!))
+        assertEquals("2026-11-26T", local(assertIs<Reply.PickTime>(answer("call hari at 7:13", "in 2 days")).options.first().atMs).take(11))
+        val dec = assertIs<Reply.PickTime>(answer("call ram at 7:13", "on december 5"))
+        assertTrue(dec.options.all { local(it.atMs).startsWith("2026-12-05T") && local(it.atMs).endsWith(":13") }, "$dec")
+        val eight = assertIs<Reply.PickTime>(answer("call gita at 7:13", "tomorrow at 8"))
+        assertEquals(listOf("2026-11-25T08:00", "2026-11-25T20:00"), eight.options.map { local(it.atMs) })
+        // 12: a yes/no question after a where question.
+        say("I put my passport in the cupboard")
+        val two = assertIs<Reply.Several>(say("where is my passport and is it expired"))
+        assertIs<Reply.Answer>(two.replies.first())
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()

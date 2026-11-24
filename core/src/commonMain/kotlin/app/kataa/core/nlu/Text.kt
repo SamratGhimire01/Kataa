@@ -28,7 +28,9 @@ object Text {
         for ((from, to) in CONTRACTIONS) s = s.replace(Regex("\\b" + Regex.escape(from) + "\\b"), to)
         s = s.replace(Regex("[\\s,]+"), " ").replace(Regex(" ([.!?;:])"), "$1")
         // "7 p.m.", "a. m.": the way speech recognizers write it.
-        s = s.replace(Regex("\\b([ap])\\. ?m\\b\\.?"), "$1m")
+        s = s.replace(Regex("(?<=\\d)([ap])\\. ?m\\b\\.?(?![\\w.])|(?<=\\d )([ap])\\. ?m\\b\\.?(?![\\w.])|^([ap])\\. ?m\\b\\.?$")) { m ->
+            (m.groupValues[1] + m.groupValues[2] + m.groupValues[3]) + "m"
+        }
         s = clockWords(s)
         s = ordinalDates(s)
         return s.trim().trimEnd('.', '!', '?', ';', ':', ',').trim()
@@ -57,9 +59,19 @@ object Text {
         "one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5, "six" to 6, "seven" to 7, "eight" to 8,
         "nine" to 9, "ten" to 10, "eleven" to 11, "twelve" to 12,
     )
-    private val MINUTE_WORDS = mapOf("o five" to "05", "ten" to "10", "fifteen" to "15", "twenty" to "20", "thirty" to "30", "forty" to "40", "forty five" to "45", "forty-five" to "45", "fifty" to "50")
+    private val MINUTE_WORDS: Map<String, String> = buildMap {
+        val units = listOf("one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+        units.forEachIndexed { i, u -> put("o $u", "0${i + 1}"); put("oh $u", "0${i + 1}") }
+        listOf("ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen")
+            .forEachIndexed { i, w -> put(w, "${10 + i}") }
+        listOf("twenty" to 20, "thirty" to 30, "forty" to 40, "fifty" to 50).forEach { (w, n) ->
+            put(w, "$n"); units.forEachIndexed { i, u -> put("$w $u", "${n + i + 1}"); put("$w-$u", "${n + i + 1}") }
+        }
+    }
     private const val HOURW = "(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
-    private const val MINW = "(o five|forty five|forty-five|fifteen|twenty|thirty|forty|fifty|ten)"
+    private const val MINW = "((?:o|oh) (?:one|two|three|four|five|six|seven|eight|nine)|(?:twenty|thirty|forty|fifty)(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)"
+    /** "alarm for 6 45": after "for", only a clock that ends the sentence or comes before a day or am/pm. */
+    private const val CLOCK_END = "(?=\\s*(?:am|pm|tomorrow|today|tonight|in the|on|every|$))"
     private const val AMPM = "(?=\\s*(?:am|pm|a\\.m|p\\.m|o'clock|oclock|in the|tonight|tomorrow|today|$))"
 
     /**
@@ -76,11 +88,13 @@ object Text {
         s = s.replace(Regex("\\b$HOURW$AMPM")) { m -> HOUR_WORDS[m.groupValues[1]].toString() }
         s = s.replace(Regex("\\b(\\d{1,2}) (\\d{2})(?=\\s*(?:am|pm|a\\.m|p\\.m)\\b)"), "$1:$2")
         // "at seven fifteen to take pills", "alarm for 6 45", "at 5 30 tomorrow": an hour and minutes after at/by/for.
-        s = s.replace(Regex("\\b(at|by|around|for) $HOURW $MINW\\b(?! (?:minutes?|mins?|hours?|days?|weeks?|years?|people|times|kg|rupees))")) { m ->
-            "${m.groupValues[1]} ${HOUR_WORDS[m.groupValues[2]]}:${MINUTE_WORDS[m.groupValues[3]]}"
+        s = s.replace(Regex("\\b(at|by|around) $HOURW $MINW\\b(?![-\\w]| (?:minutes?|mins?|hours?|days?|weeks?|years?|people|times|kg|rupees?))|\\b(for) $HOURW $MINW$CLOCK_END")) { m ->
+            val g = if (m.groupValues[1].isNotEmpty()) m.groupValues.subList(1, 4) else m.groupValues.subList(4, 7)
+            "${g[0]} ${HOUR_WORDS[g[1]]}:${MINUTE_WORDS[g[2]]}"
         }
-        s = s.replace(Regex("\\b(at|by|around|for) (\\d{1,2}) ([0-5]\\d)\\b(?! (?:minutes?|mins?|hours?|days?|weeks?|years?|year olds?|people|times|kg|rupees|of))")) { m ->
-            if (m.groupValues[2].toInt() <= 23) "${m.groupValues[1]} ${m.groupValues[2]}:${m.groupValues[3]}" else m.value
+        s = s.replace(Regex("\\b(at|by|around) (\\d{1,2}) ([0-5]\\d)\\b(?![-\\w]| (?:minutes?|mins?|hours?|days?|weeks?|years?|year olds?|people|times|kg|rupees?|of))|\\b(for) (\\d{1,2}) ([0-5]\\d)$CLOCK_END")) { m ->
+            val g = if (m.groupValues[1].isNotEmpty()) m.groupValues.subList(1, 4) else m.groupValues.subList(4, 7)
+            if (g[1].toInt() <= 23) "${g[0]} ${g[1]}:${g[2]}" else m.value
         }
         s = s.replace(Regex("\\b(at|by|around) $HOURW\\b")) { m -> "${m.groupValues[1]} ${HOUR_WORDS[m.groupValues[2]]}" }
         return s
@@ -93,6 +107,7 @@ object Text {
         "thirtieth" to 30,
     )
     private const val MONTHS = "(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+    private const val MONTHS_NOT_NAMES = "(?:january|february|march|april|june|july|august|september|october|november|december|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
     private const val ORDW = "(?:(twenty|thirty)[ -])?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth)"
 
     private fun ordinalNumber(tens: String, unit: String): String? {
@@ -104,7 +119,7 @@ object Text {
 
     /** "march twenty first", "the twenty third of may": spoken day numbers next to a month, as digits ("march 21st"). */
     private fun ordinalDates(input: String): String {
-        var s = input.replace(Regex("\\b($MONTHS) (?:the )?$ORDW\\b")) { m ->
+        var s = input.replace(Regex("\\b($MONTHS_NOT_NAMES|(?<=\\b(?:on|is|in|of|by|until|till) )may) (?:the )?$ORDW\\b(?! thing)")) { m ->
             ordinalNumber(m.groupValues[2], m.groupValues[3])?.let { "${m.groupValues[1]} $it" } ?: m.value
         }
         s = s.replace(Regex("\\b$ORDW(?= of $MONTHS\\b)")) { m -> ordinalNumber(m.groupValues[1], m.groupValues[2]) ?: m.value }
