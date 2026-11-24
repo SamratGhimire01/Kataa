@@ -517,7 +517,8 @@ class Assistant(private val core: KataaCore) {
             !(Regex("'s (?:day|eve|night|week)$").containsMatchIn(thing) && !Regex("^(?:my|our) ").containsMatchIn(thing))
         if (!ownMarker) return Reply.NotFound(u.query)
         val yours = thing.replace(Regex("^(?:my|our)\\s+"), "your ").let { if (it.startsWith("your ")) it else "your $it" }
-        return Reply.NotFound(u.query, yours, isWhen = m.groupValues[1] == "when")
+        val isWhen = m.groupValues[1] == "when" || Regex("\\b(?:birthday|bday|anniversary|date|day)$").containsMatchIn(thing)
+        return Reply.NotFound(u.query, yours, isWhen = isWhen)
     }
 
     /**
@@ -547,6 +548,37 @@ class Assistant(private val core: KataaCore) {
         val at = Instant.fromEpochMilliseconds(option.atMs)
         val t = app.kataa.core.nlu.TimeMatch(at, p.rrule, 0..0, timeWasDefaulted = false)
         return schedule(p.memory, t, null, p.persistent, ctx)
+    }
+
+    /**
+     * An answer to "AM or PM?" that names a clock ("7 am", "7:13 pm", "at 8 pm", "tomorrow at 8 pm"). The same hour
+     * as an option picks it (keeping its day); a new hour goes on the asked day unless the answer names a day; the
+     * repeat is kept. Null when the answer has no clock (then "am"/"pm"/"the first one" decide).
+     */
+    private fun pickAnswer(p: Reply.PickTime, text: String, ctx: AssistantContext): Reply? {
+        val tz = ctx.timeZone
+        val hours = Regex("\\b(\\d{1,2})(?:[:.](\\d{2}))?\\b").findAll(text).toList().ifEmpty { return null }
+        val options = p.options.map { it to Instant.fromEpochMilliseconds(it.atMs).toLocalDateTime(tz) }
+        val am = AM_WORD.containsMatchIn(text); val pm = PM_WORD.containsMatchIn(text)
+        val h = hours.first().groupValues[1].toInt(); val min = hours.first().groupValues[2].toIntOrNull() ?: 0
+        // The asked hour with a half: "7 am", "7 in the evening", "19:00".
+        val twentyFour = h == 0 || h > 12
+        if (twentyFour || am || pm) options.firstOrNull { (_, t) ->
+            t.minute == min && (if (twentyFour) t.hour == h else t.hour % 12 == h % 12 && (if (am) t.hour < 12 else t.hour >= 12))
+        }?.let { return pickTimeOption(p, it.first, ctx) }
+        if (options.any { (_, t) -> t.hour % 12 == h % 12 && t.minute == min } && !am && !pm && !twentyFour) return null
+        val parsed = TimeParser.parse(text, ctx.nowMs, tz)?.takeIf { it.alternative == null } ?: return null
+        val said = parsed.fireAt.toLocalDateTime(tz)
+        val namesDay = Regex("\\b(?:today|tomorrow|tonight|day after|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next|on the|after \\d+|in \\d+ (?:days?|weeks?)|january|february|march|april|may|june|july|august|september|october|november|december)\\b").containsMatchIn(text)
+        // The asked day: the option in the same half of the day as the new hour ("at 8 pm" goes with the 7 pm option).
+        val sameHalf = options.firstOrNull { (_, t) -> (t.hour >= 12) == (said.hour >= 12) } ?: options.first()
+        var at = if (namesDay) said else kotlinx.datetime.LocalDateTime(sameHalf.second.date, said.time)
+        val nowLocal = Instant.fromEpochMilliseconds(ctx.nowMs).toLocalDateTime(tz)
+        if (at <= nowLocal) {
+            at = p.rrule?.let { r -> app.kataa.core.triggers.Recurrence.next(at.toInstant(tz).toEpochMilliseconds(), r, tz, afterMs = ctx.nowMs) }
+                ?.let { Instant.fromEpochMilliseconds(it).toLocalDateTime(tz) } ?: kotlinx.datetime.LocalDateTime(at.date.plus(1, DateTimeUnit.DAY), at.time)
+        }
+        return schedule(p.memory, app.kataa.core.nlu.TimeMatch(at.toInstant(tz), p.rrule ?: parsed.rrule, 0..0, timeWasDefaulted = false), null, p.persistent, ctx)
     }
 
     /** "Save it" after a [Reply.NeedsClarification] or [Reply.NotFound]. */
@@ -599,6 +631,11 @@ class Assistant(private val core: KataaCore) {
         (if (isAlarm) null else duplicateOf(u.body, MemoryKind.REMINDER))?.let { existing ->
             val active = core.reminders.forMemory(existing.id).any { it.status.name in setOf("SCHEDULED", "SNOOZED") }
             if (u.time == null && u.moment == null) return if (active) Reply.AlreadySaved(existing) else Reply.NeedsTime(existing)
+            // The same time said again: nothing new, so no second alarm.
+            val t = u.time
+            if (t != null && u.moment == null && core.reminders.forMemory(existing.id).any {
+                    it.status.name in setOf("SCHEDULED", "SNOOZED") && it.fireAt == t.fireAt.toEpochMilliseconds() && it.rrule == t.rrule
+                }) return Reply.AlreadySaved(existing)
             setLast(existing.id)
             pickTime(existing, u, raw, ctx)?.let { return it }
             return schedule(existing, u.time, u.moment, u.persistent, ctx)
@@ -639,13 +676,7 @@ class Assistant(private val core: KataaCore) {
         }
         if (previous is Reply.PickTime) {
             val text = Text.normalize(raw)
-            // A new hour ("at 8 pm", "tomorrow at 8 pm"): schedule that, keeping the repeat.
-            if (Regex("\\d").containsMatchIn(text)) TimeParser.parse(text, ctx.nowMs, ctx.timeZone)?.takeIf { it.alternative == null }?.let { t ->
-                val fixed = if (t.rrule == null && previous.rrule != null) {
-                    TimeParser.parse("$text ${Describe.rruleWords(previous.rrule)}", ctx.nowMs, ctx.timeZone)?.takeIf { it.rrule != null } ?: t.copy(rrule = previous.rrule)
-                } else t
-                return schedule(previous.memory, fixed, null, previous.persistent, ctx)
-            }
+            pickAnswer(previous, text, ctx)?.let { return it }
             val pick = when {
                 PICK_FIRST.matches(text) -> previous.options.first()
                 PICK_SECOND.matches(text) -> previous.options.getOrNull(1)
@@ -890,6 +921,8 @@ class Assistant(private val core: KataaCore) {
         val id = Migrations.getMeta(core.db, LAST_KEY)?.toLongOrNull() ?: return Reply.NothingToUndo
         val m = core.memories.get(id)?.takeIf { it.deletedAt == null } ?: return Reply.NothingToUndo
         core.memories.trash(id)
+        // Undoing a replace ("change my wifi password to x") brings the old one back.
+        m.supersedesId?.let { old -> core.memories.get(old)?.takeIf { it.deletedAt != null }?.let { core.memories.restore(old) } }
         Migrations.setMeta(core.db, LAST_KEY, "")
         return Reply.Undone(m)
     }

@@ -32,7 +32,9 @@ object ListParser {
     private val CHEAPEST = Regex("\\b(?:cheapest|least (?:costly|expensive|cost|money)|lowest cost|cost of the (?:least|smallest|cheapest|lowest)|smallest cost|least task)\\b")
     private val QUICKEST = Regex("\\b(?:quickest|shortest|fastest|easiest|smallest|least time)\\b")
     private val TOTAL_COST = Regex("^how much (?:will|would|does|do|is|did)\\b.*\\b(?:cost|costs|total|spend)\\b|\\btotal cost\\b|^how much money (?:do i|will i|would i|i)\\b")
-    private val TOTAL_TIME = Regex("^how (?:long|much time) (?:will|would|does|do|is)\\b")
+    private val TOTAL_TIME = Regex("^how (?:long|much time) (?:will|would|does|do|is)\\b|\\btotal (?:time|duration|minutes|hours)\\b|^how much time\\b")
+    /** "total time", "what's the total cost": about the list even without naming it. */
+    private val BARE_TOTAL = Regex("^(?:what is |whats |what's )?(?:the |my )?total (?:time|cost|duration)$")
     private val TASKISH = Regex("\\b(?:tasks?|to-?dos|to dos|todos|to-?do list|to do list|todo list|list|goals?|things to do|jobs)\\b")
 
     /**
@@ -72,7 +74,7 @@ object ListParser {
     fun parse(text: String, raw: String, nowMs: Long, tz: TimeZone): Understanding? {
         val today = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date
         journal(text, raw, nowMs, tz, today)?.let { return it }
-        if (!TASKISH.containsMatchIn(text) && TICK.none { it.first.matches(text.replace(TICK_TODAY, "")) } && !LEFT.matches(text)) return null
+        if (!TASKISH.containsMatchIn(text) && TICK.none { it.first.matches(text.replace(TICK_TODAY, "")) } && !LEFT.matches(text) && !BARE_TOTAL.containsMatchIn(text)) return null
 
         ADD.find(text)?.let { m ->
             // "write it on the list", "note my tasks in my list": no item named.
@@ -151,8 +153,8 @@ object ListParser {
         val ask = when {
             CHEAPEST.containsMatchIn(text) && (TASKISH.containsMatchIn(text) || text.contains("least task")) -> app.kataa.core.nlu.ListAsk.CHEAPEST
             QUICKEST.containsMatchIn(text) && TASKISH.containsMatchIn(text) -> ListAsk.QUICKEST
-            TOTAL_COST.containsMatchIn(text) && TASKISH.containsMatchIn(text) -> ListAsk.TOTAL_COST
-            TOTAL_TIME.containsMatchIn(text) && TASKISH.containsMatchIn(text) -> ListAsk.TOTAL_TIME
+            TOTAL_COST.containsMatchIn(text) && (TASKISH.containsMatchIn(text) || BARE_TOTAL.matches(text)) -> ListAsk.TOTAL_COST
+            TOTAL_TIME.containsMatchIn(text) && (TASKISH.containsMatchIn(text) || BARE_TOTAL.matches(text)) -> ListAsk.TOTAL_TIME
             COUNT.matches(text) -> ListAsk.COUNT
             LEFT.matches(text) -> ListAsk.LEFT
             else -> return null

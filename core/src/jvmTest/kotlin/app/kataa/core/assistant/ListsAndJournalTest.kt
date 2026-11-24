@@ -395,6 +395,37 @@ class ListsAndJournalTest {
         assertEquals("2026-11-24T20:00", local(eight.fireAt!!)); assertEquals("FREQ=DAILY", eight.rrule)
     }
 
+    /** Seventh bug-hunt pass. Said on Tuesday 24 Nov 2026 at 08:00. */
+    @Test fun reviewFindingsPass7() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun answer(q: String, a: String) = core.assistant.followUp(assertIs<Reply.PickTime>(say(q), q), a, ctx())
+        // 1: the answer keeps the asked day.
+        assertEquals("2026-11-27T07:00", local(set(answer("remind me to call didi after 3 days at 7", "7 am")).fireAt!!))
+        assertEquals("2026-12-05T19:00", local(set(answer("remind me to call ram on december 5 at 7", "7 pm")).fireAt!!))
+        assertEquals("2026-11-25T19:13", local(set(answer("remind me to call hari tomorrow at 7:13", "7:13 pm")).fireAt!!))
+        assertEquals("2026-11-27T19:00", local(set(answer("remind me to call sita on friday at 7", "7 in the evening")).fireAt!!))
+        val y = set(answer("remind me every year on december 5 at 7 to call mom", "7 pm"))
+        assertEquals("2026-12-05T19:00", local(y.fireAt!!)); assertEquals("FREQ=YEARLY", y.rrule)
+        val med = set(answer("remind me every day at 7 to take medicine", "tomorrow at 8 pm"))
+        assertEquals("2026-11-25T20:00", local(med.fireAt!!)); assertEquals("FREQ=DAILY", med.rrule)
+        // 2: undoing a password change brings the old one back.
+        val typed = ctx().copy(source = app.kataa.core.model.Source.TEXT)
+        core.assistant.handle("my gmail password is Tiger55", typed).let { if (it is Reply.ConfirmSecret) core.assistant.followUp(it, "yes", ctx()) }
+        core.assistant.handle("change my gmail password to Lion77", typed).let { if (it is Reply.ConfirmSecret) core.assistant.followUp(it, "yes", ctx()) }
+        assertIs<Reply.Undone>(say("undo"))
+        assertEquals(1L, core.db.queryLong("SELECT count(*) FROM memories WHERE body LIKE '%Tiger55%' AND deleted_at IS NULL"))
+        // 3: the same reminder twice rings once.
+        val first = set(say("remind me to buy sugar tomorrow at 6 pm"))
+        assertIs<Reply.AlreadySaved>(say("remind me to buy sugar tomorrow at 6 pm"))
+        assertEquals(1, core.reminders.forMemory(first.memoryId).size)
+        // 4: "what's my mom's birthday" asks when.
+        assertTrue(assertIs<Reply.NotFound>(say("what's my mom's birthday")).isWhen)
+        // 5: total time.
+        say("add study 2 hours and cook 30 minutes to my to do list")
+        assertEquals(ListAction.TOTAL_TIME, list(say("total time")).action)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()
