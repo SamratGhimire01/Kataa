@@ -228,6 +228,8 @@ object TimeParser {
         val defaulted = clock == null && partHour == null
         val time = clock ?: LocalTime(partHour ?: DEFAULT_HOUR, 0)
         var day = date ?: local.date
+        // "tomorrow at midnight": the midnight at the end of that day.
+        if (date != null && rrule == null && Regex("\\bmidnight\\b").containsMatchIn(text)) { day = day.plus(1, DateTimeUnit.DAY); date = day }
         var at = LocalDateTime(day, time)
         // "at 8" said at 9 in the morning means 8 in the evening, if that is still ahead today.
         if (date == null && rrule == null && clock != null && clock!!.hour in 7..11 && !hasAmPm(text) && (partHour == null || partHour!! >= 12) && at <= local) {
@@ -285,7 +287,7 @@ object TimeParser {
     private fun clockFrom(m: MatchResult): LocalTime? {
         val g = m.groupValues
         g[7].ifEmpty { null }?.let { word ->
-            return when (word) { "noon" -> LocalTime(12, 0); "midnight" -> LocalTime(23, 59); else -> LocalTime(13, 0) }
+            return when (word) { "noon" -> LocalTime(12, 0); "midnight" -> LocalTime(0, 0); else -> LocalTime(13, 0) }
         }
         val (hStr, minStr, suffix) = when {
             g[1].isNotEmpty() -> Triple(g[1], g[2], g[3])

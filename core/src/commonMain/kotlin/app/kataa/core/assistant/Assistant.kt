@@ -181,7 +181,8 @@ class Assistant(private val core: KataaCore) {
         val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
         val meant = parts.map { IntentParser.parse(it, ctx.nowMs, ctx.timeZone, known) }
         if (meant.any { it is Understanding.Unclear || it is Understanding.Correct || it == Understanding.Undo }) return null
-        if (meant.all { it is Understanding.Ask }) return null
+        // Questions are split only when each part is a whole question ("where is my wallet and what is my wifi password").
+        if (meant.all { it is Understanding.Ask } && !parts.all { Regex("^(?:what|where|when|which|who|how|did|do|does|is|are)\\b").containsMatchIn(it) }) return null
         // A save that is only a plain note may really be the tail of the first request ("... and the bread"): keep it whole.
         if (meant.withIndex().any { (i, it) -> it is Understanding.Save && it.kind == MemoryKind.NOTE && parts[i].split(' ').size < 4 }) return null
         return Reply.Several(parts.zip(meant).map { (p, u) -> byRules(u, p, ctx) })
@@ -587,6 +588,36 @@ class Assistant(private val core: KataaCore) {
         return schedule(p.memory, app.kataa.core.nlu.TimeMatch(at.toInstant(tz), p.rrule ?: parsed.rrule, 0..0, timeWasDefaulted = false), null, p.persistent, ctx)
     }
 
+    /**
+     * "tomorrow", "tomorrow evening", "tomorrow at 7", "today": a day (and maybe a half) for the asked clock. The half
+     * picks it; with no half, the one option on that day, or the question again for that day. Null when no day is named.
+     */
+    private fun pickOnDay(p: Reply.PickTime, text: String, ctx: AssistantContext): Reply? {
+        if (!NAMES_DAY.containsMatchIn(text) && !Regex("\\b(?:today|tonight)\\b").containsMatchIn(text)) return null
+        val tz = ctx.timeZone
+        val parsed = TimeParser.parse(text, ctx.nowMs, tz) ?: return null
+        val day = parsed.fireAt.toLocalDateTime(tz).date
+        val options = p.options.map { it to Instant.fromEpochMilliseconds(it.atMs).toLocalDateTime(tz) }
+        // A different clock ("tomorrow at 8"): that hour; otherwise the asked one.
+        val hourSaid = Regex("\\b(\\d{1,2})(?:[:.](\\d{2}))?\\b").find(text)?.let { it.groupValues[1].toInt() to it.groupValues[2].toIntOrNull() }
+        val base = options.first().second
+        val sameHour = hourSaid == null || hourSaid.first % 12 == base.hour % 12 && (hourSaid.second == null || hourSaid.second == base.minute)
+        if (!sameHour) return null
+        val am = AM_WORD.containsMatchIn(text); val pm = PM_WORD.containsMatchIn(text)
+        val nowLocal = Instant.fromEpochMilliseconds(ctx.nowMs).toLocalDateTime(tz)
+        val halves = listOf(base.hour % 12, base.hour % 12 + 12).map { kotlinx.datetime.LocalDateTime(day, kotlinx.datetime.LocalTime(it, base.minute)) }
+            .filter { it > nowLocal }
+        fun opt(t: kotlinx.datetime.LocalDateTime) = t.toInstant(tz).let { TimeOption(it.toEpochMilliseconds(), Describe.time(it, null, ctx)) }
+        val chosen = when {
+            am != pm -> halves.firstOrNull { (it.hour < 12) == am }
+            halves.size == 1 -> halves.single()
+            else -> options.filter { it.second.date == day }.singleOrNull()?.second
+        }
+        if (chosen != null) return pickTimeOption(p, opt(chosen), ctx)
+        if (halves.isEmpty()) return null
+        return p.copy(options = halves.map(::opt))
+    }
+
     /** Words left after the time is taken out, other than "remind me", "make it", "the first one" and the like. */
     private fun saysMoreThanATime(text: String, ctx: AssistantContext): Boolean {
         var s = text
@@ -698,11 +729,12 @@ class Assistant(private val core: KataaCore) {
             return rememberAnswer(previous, raw, ctx)
         }
         if (previous is Reply.PickTime) {
-            val text = Text.normalize(raw)
+            val text = Text.stripFillers(Text.normalize(raw))
             // "remind me to buy milk at 5 pm", "my meeting is at 3 pm": a new request, the asked one stays as it is.
             // "remind me at 7 pm", "make it today at 7 13 in the evening please": only a time, so an answer.
             if (saysMoreThanATime(text, ctx)) return handle(raw, ctx)
             pickAnswer(previous, text, ctx)?.let { return it }
+            pickOnDay(previous, text, ctx)?.let { return it }
             val pick = when {
                 PICK_FIRST.matches(text) -> previous.options.first()
                 PICK_SECOND.matches(text) -> previous.options.getOrNull(1)

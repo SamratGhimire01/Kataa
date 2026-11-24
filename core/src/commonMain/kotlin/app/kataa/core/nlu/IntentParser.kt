@@ -72,7 +72,7 @@ sealed interface Understanding {
  * classifier and the optional on-device LLM can later handle what these rules leave as [Understanding.Unclear].
  */
 object IntentParser {
-    private val UNDO = Regex("^(?:undo|undo that|forget that|forget it|delete that|delete the last one|remove that|scratch that|never mind|nevermind|cancel that|that is wrong delete it)$")
+    private val UNDO = Regex("^(?:undo|undo that|forget that|forget it|delete that|delete the last one|remove that|scratch that|never mind|nevermind|cancel|cancel it|cancel that|that is wrong delete it)$")
     private val CORRECT = Regex("^(?:actually|no|nope|correction|sorry|i mean|i meant|wait)\\b[\\s,:-]*(?:it is|they are|it was|they were|i said)?\\s*(.+)$")
     private val CREATE_CATEGORY = Regex("^(?:please )?(?:make|create|add|start|new)(?: me)? (?:a )?(?:new )?(?:category|folder|section)(?: called| named| for)? (.+?)(?: for (.+))?$")
     private val BROWSE = Regex("^(?:show|open|list|see)(?: me)?(?: all)?(?: of)?(?: my)? (.+?)(?: stuff| things| notes| memories| category| items| list)?$")
@@ -156,7 +156,7 @@ object IntentParser {
         ALARM.find(text)?.let { m ->
             val wake = text.contains("wake")
             val whenText = m.groupValues[1].trim()
-            val at = if (Regex("^\\d").containsMatchIn(whenText)) "at $whenText" else whenText
+            val at = if (Regex("^(?:\\d|noon\\b|midnight\\b)").containsMatchIn(whenText)) "at $whenText" else whenText
             val t = TimeParser.parse(at, nowMs, tz)
             if (t != null || whenText.isEmpty()) {
                 return Understanding.Remind(if (wake) "Wake up" else "Alarm", t, null, persistent = true)
@@ -286,9 +286,26 @@ object IntentParser {
             }
         }
         val shownService = restoreCase(svc, raw).replaceFirstChar { it.uppercase() }
-        val body = if (statement) saveBody(raw) else "$shownService password is ${originalCase(v, raw)}"
+        val shown = originalCase(v, raw)
+        val exact = originalValue(v, raw)
+        val body = if (statement) saveBody(raw).let { b -> if (b.endsWith(shown) && exact.length > shown.length) b + exact.substring(shown.length) else b }
+            else "$shownService password is $exact"
         return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey("$svc password"), null, replacesOld = true,
-            secret = Secret(shownService, originalCase(v, raw)))
+            secret = Secret(shownService, exact))
+    }
+
+    /**
+     * The password as typed, with the symbols that end it ("G00gle!", "pa$$?") which normalizing drops. A single "."
+     * or "," at the very end is the end of the sentence, not the password.
+     */
+    private fun originalValue(lower: String, raw: String): String {
+        val i = raw.lowercase().lastIndexOf(lower)
+        if (i < 0) return lower
+        var end = i + lower.length
+        while (end < raw.length && !raw[end].isWhitespace()) end++
+        var v = raw.substring(i, end)
+        if (end == raw.trimEnd().length && v.length > lower.length && (v.endsWith(".") || v.endsWith(",")) && !v.endsWith("..")) v = v.dropLast(1)
+        return v
     }
 
     /** [lower] as the user typed it (passwords are case-sensitive), when it can be found in [raw]. */

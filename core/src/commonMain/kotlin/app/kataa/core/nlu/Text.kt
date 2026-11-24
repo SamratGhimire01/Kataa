@@ -27,7 +27,10 @@ object Text {
             .replace('’', '\'').replace('‘', '\'').replace('“', '"').replace('”', '"')
         for ((from, to) in CONTRACTIONS) s = s.replace(Regex("\\b" + Regex.escape(from) + "\\b"), to)
         s = s.replace(Regex("[\\s,]+"), " ").replace(Regex(" ([.!?;:])"), "$1")
+        // "7 p.m.", "a. m.": the way speech recognizers write it.
+        s = s.replace(Regex("\\b([ap])\\. ?m\\b\\.?"), "$1m")
         s = clockWords(s)
+        s = ordinalDates(s)
         return s.trim().trimEnd('.', '!', '?', ';', ':', ',').trim()
     }
 
@@ -71,8 +74,40 @@ object Text {
         s = s.replace(Regex("\\b$HOURW $MINW$AMPM")) { m -> "${HOUR_WORDS[m.groupValues[1]]}:${MINUTE_WORDS[m.groupValues[2]]}" }
         s = s.replace(Regex("\\b(\\d{1,2}) $MINW$AMPM")) { m -> "${m.groupValues[1]}:${MINUTE_WORDS[m.groupValues[2]]}" }
         s = s.replace(Regex("\\b$HOURW$AMPM")) { m -> HOUR_WORDS[m.groupValues[1]].toString() }
-        s = s.replace(Regex("\\b(at|by|around) $HOURW\\b")) { m -> "${m.groupValues[1]} ${HOUR_WORDS[m.groupValues[2]]}" }
         s = s.replace(Regex("\\b(\\d{1,2}) (\\d{2})(?=\\s*(?:am|pm|a\\.m|p\\.m)\\b)"), "$1:$2")
+        // "at seven fifteen to take pills", "alarm for 6 45", "at 5 30 tomorrow": an hour and minutes after at/by/for.
+        s = s.replace(Regex("\\b(at|by|around|for) $HOURW $MINW\\b(?! (?:minutes?|mins?|hours?|days?|weeks?|years?|people|times|kg|rupees))")) { m ->
+            "${m.groupValues[1]} ${HOUR_WORDS[m.groupValues[2]]}:${MINUTE_WORDS[m.groupValues[3]]}"
+        }
+        s = s.replace(Regex("\\b(at|by|around|for) (\\d{1,2}) ([0-5]\\d)\\b(?! (?:minutes?|mins?|hours?|days?|weeks?|years?|year olds?|people|times|kg|rupees|of))")) { m ->
+            if (m.groupValues[2].toInt() <= 23) "${m.groupValues[1]} ${m.groupValues[2]}:${m.groupValues[3]}" else m.value
+        }
+        s = s.replace(Regex("\\b(at|by|around) $HOURW\\b")) { m -> "${m.groupValues[1]} ${HOUR_WORDS[m.groupValues[2]]}" }
+        return s
+    }
+
+    private val ORDINAL_WORDS = mapOf(
+        "first" to 1, "second" to 2, "third" to 3, "fourth" to 4, "fifth" to 5, "sixth" to 6, "seventh" to 7, "eighth" to 8,
+        "ninth" to 9, "tenth" to 10, "eleventh" to 11, "twelfth" to 12, "thirteenth" to 13, "fourteenth" to 14,
+        "fifteenth" to 15, "sixteenth" to 16, "seventeenth" to 17, "eighteenth" to 18, "nineteenth" to 19, "twentieth" to 20,
+        "thirtieth" to 30,
+    )
+    private const val MONTHS = "(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+    private const val ORDW = "(?:(twenty|thirty)[ -])?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth)"
+
+    private fun ordinalNumber(tens: String, unit: String): String? {
+        val n = (when (tens) { "twenty" -> 20; "thirty" -> 30; else -> 0 }) + (ORDINAL_WORDS[unit] ?: return null)
+        if (n !in 1..31 || tens.isNotEmpty() && ORDINAL_WORDS.getValue(unit) > 9) return null
+        val sfx = if (n % 10 == 1 && n != 11) "st" else if (n % 10 == 2 && n != 12) "nd" else if (n % 10 == 3 && n != 13) "rd" else "th"
+        return "$n$sfx"
+    }
+
+    /** "march twenty first", "the twenty third of may": spoken day numbers next to a month, as digits ("march 21st"). */
+    private fun ordinalDates(input: String): String {
+        var s = input.replace(Regex("\\b($MONTHS) (?:the )?$ORDW\\b")) { m ->
+            ordinalNumber(m.groupValues[2], m.groupValues[3])?.let { "${m.groupValues[1]} $it" } ?: m.value
+        }
+        s = s.replace(Regex("\\b$ORDW(?= of $MONTHS\\b)")) { m -> ordinalNumber(m.groupValues[1], m.groupValues[2]) ?: m.value }
         return s
     }
 

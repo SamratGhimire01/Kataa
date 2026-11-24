@@ -516,6 +516,61 @@ class ListsAndJournalTest {
         assertTrue(core.memories.get(doc.memoryId)!!.body.contains("when to take it"))
     }
 
+    @Test fun reviewFindingsPass10() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun answer(q: String, a: String) = core.assistant.followUp(assertIs<Reply.PickTime>(say(q), q), a, ctx())
+        // 1: a day and a half of the day.
+        assertEquals("2026-11-25T19:13", local(set(answer("call didi at 7:13", "tomorrow evening")).fireAt!!))
+        assertEquals("2026-11-25T19:13", local(set(answer("call hari at 7:13", "in the evening tomorrow")).fireAt!!))
+        // 2, 3: a day alone keeps the clock.
+        assertEquals("2026-11-25T07:13", local(set(answer("call sita at 7:13", "tomorrow")).fireAt!!))
+        assertEquals("2026-11-24T19:13", local(set(answer("call gita at 7:13", "today")).fireAt!!))
+        assertEquals("2026-11-25T07:13", local(set(answer("remind me to call ram at 7:13", "tomorrow at 7")).fireAt!!))
+        // 4: "p.m." as speech recognizers write it. 5: fillers.
+        assertEquals("2026-11-24T19:13", local(set(answer("call shyam at 7:13", "7 p.m.")).fireAt!!))
+        assertEquals("2026-11-24T19:13", local(set(answer("call bina at 7:13", "p.m.")).fireAt!!))
+        assertEquals("2026-11-24T19:13", local(set(answer("call mina at 7:13", "uh pm")).fireAt!!))
+        val dot = set(say("remind me to pay rent at 9 a.m. tomorrow"))
+        assertEquals("2026-11-25T09:00", local(dot.fireAt!!)); assertEquals("Pay rent", core.memories.get(dot.memoryId)!!.body.trimEnd('.'))
+        // 6: spoken minutes.
+        fun minutes(r: Reply) = when (r) {
+            is Reply.PickTime -> r.options.map { local(it.atMs).substringAfter('T') }
+            else -> listOf(local(set(r).fireAt!!).substringAfter('T'))
+        }
+        minutes(say("remind me at seven fifteen to take pills")).let { assertTrue(it.all { t -> t.endsWith(":15") }, "$it") }
+        minutes(say("set an alarm for 6 45")).let { assertTrue(it.all { t -> t.endsWith(":45") }, "$it") }
+        assertEquals("2026-11-25T05:30", local(set(say("wake me up at 5 30 tomorrow")).fireAt!!))
+        val mom = say("remind me to call mom at 7 13")
+        assertTrue(minutes(mom).all { it.endsWith(":13") }); assertEquals("Call mom", assertIs<Reply.PickTime>(mom).memory.body.trimEnd('.'))
+        // 7: midnight.
+        clock.now = LocalDateTime(2026, 11, 24, 10, 0).toInstant(tz).toEpochMilliseconds()
+        assertEquals("2026-11-25T00:00", local(set(say("remind me to call the bank at midnight")).fireAt!!))
+        assertEquals("2026-11-25T00:00", local(set(say("set an alarm for midnight")).fireAt!!))
+        assertEquals("2026-11-26T00:00", local(set(say("remind me to lock the gate tomorrow at midnight")).fireAt!!))
+        clock.now = LocalDateTime(2026, 11, 24, 8, 0).toInstant(tz).toEpochMilliseconds()
+        // 8: typed passwords keep their symbols.
+        fun typed(s: String) = core.assistant.handle(s, ctx().copy(source = app.kataa.core.model.Source.TEXT))
+        assertEquals("G00gle!", assertIs<Reply.Saved>(typed("password for gmail is G00gle!")).memory.body.substringAfterLast(' '))
+        assertEquals("Hello123!", assertIs<Reply.Saved>(typed("my wifi password is Hello123!")).memory.body.substringAfterLast(' '))
+        assertEquals("Hello123!", assertIs<Reply.ConfirmSecret>(say("my office wifi password is Hello123!")).value)
+        // 9: day numbers in words get the yearly reminder.
+        val nf = assertIs<Reply.NotFound>(say("what's my aunt's birthday"))
+        assertEquals("FREQ=YEARLY", assertIs<Reply.ReminderSet>(core.assistant.followUp(nf, "march twenty first", ctx())).reminders.single().rrule)
+        val nf2 = assertIs<Reply.NotFound>(say("what's my uncle's birthday"))
+        val may = assertIs<Reply.ReminderSet>(core.assistant.followUp(nf2, "the twenty third of may", ctx())).reminders.single()
+        assertEquals("FREQ=YEARLY", may.rrule); assertTrue(local(may.fireAt!!).startsWith("2027-05-23"), local(may.fireAt!!))
+        // 10: two questions, two answers.
+        say("I put my wallet in the bag")
+        val both = assertIs<Reply.Several>(say("where is my wallet and what is my gmail password"))
+        assertEquals(2, both.replies.size)
+        // 11: "cancel" saves nothing.
+        val before = core.memories.recent(limit = 400).size
+        val c = say("cancel")
+        assertTrue(c !is Reply.NeedsTime && c !is Reply.Saved, "$c")
+        assertTrue(core.memories.recent(limit = 400).size <= before)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()
