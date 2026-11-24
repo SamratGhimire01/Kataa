@@ -11,7 +11,7 @@ import app.kataa.core.model.MemoryKind
 object Secrets {
     private val WORD = Regex("\\b(?:password|passwords|passcode|pass code|pin|pin code|pin number|otp|cvv|pattern lock|lock code|locker code|combination|wifi key)\\b")
     /** "Facebook password is Samrat 001", "atm pin: 4455", "my pin for the bank is 1234": after the keyword is the value. */
-    private val VALUE = Regex("(?i)\\b(password|passcode|pass code|pin|pin code|pin number|otp|cvv|lock code|locker code|combination|wifi key)(\\s+(?:for|at|in|of)\\s+(?:the\\s+|my\\s+|our\\s+)?[\\w'-]+(?:\\s+[\\w'-]+)?(?=\\s+(?:is|=|was)\\b))?(\\s+(?:is|=|:|was)\\s*|\\s*[:=]\\s*)(?!(?:on|in|at|under|inside|behind|near|with|kept|stored|written|saved|somewhere|the same)\\b)(\\S.*)$")
+    private val VALUE = Regex("(?i)\\b(password|passcode|pass code|pin|pin code|pin number|otp|cvv|lock code|locker code|combination|wifi key)(\\s+(?:for|at|in|of)\\s+(?:the\\s+|my\\s+|our\\s+)?[\\w'-]+(?:\\s+[\\w'-]+)?(?=\\s+(?:is|was)\\b|\\s*=))?(\\s+(?:is|=|:|was)\\s*|\\s*[:=]\\s*)(?!(?:on|in|at|under|inside|behind|near|with|kept|stored|written|saved|somewhere|the same|not|wrong|too|expired|blocked|incorrect|broken|forgotten|lost|locked)\\b)(\\S.*)$")
 
     fun looksSecret(body: String, kind: MemoryKind, subject: String?): Boolean {
         if (subject != null && WORD.containsMatchIn(subject.lowercase())) return true
@@ -37,6 +37,12 @@ object Secrets {
         val before = body.substring(0, m.range.first).trim().replace(OWNER, "").trim()
         val forPart = m.groupValues[2].trim().replace(Regex("(?i)^(?:for|at|in|of)\\s+"), "").replace(OWNER, "").trim()
         return before.ifEmpty { forPart }.ifEmpty { null }
+    }
+
+    /** The body with a new value in place of the old one: "Wifi password at home is NEW1". */
+    fun replaceValue(body: String, value: String): String? {
+        val g = VALUE.find(body)?.groups?.get(4) ?: return null
+        return body.substring(0, g.range.first) + value.trim()
     }
 
     /** "pin", "passcode", "password", "otp", ...: what kind of secret it is. */

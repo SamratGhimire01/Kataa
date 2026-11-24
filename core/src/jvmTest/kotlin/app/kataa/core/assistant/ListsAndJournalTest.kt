@@ -750,6 +750,29 @@ class ListsAndJournalTest {
         assertTrue(say("hey there's a parcel coming tomorrow") !is Reply.NotFound)
     }
 
+    @Test fun reviewFindingsPass17() {
+        var n = 0
+        fun card() = assertIs<Reply.ConfirmSecret>(say("my wifi password is sunflower${50 + n++}"))
+        val S = app.kataa.core.memory.Secrets
+        // 1, 2: yes, again, and no phrases on the card.
+        for (yes in listOf("go ahead", "uh yes", "um yes", "it's alright", "its all good", "it is fine thanks"))
+            assertTrue(core.assistant.followUp(card(), yes, ctx()).let { it is Reply.Saved || it is Reply.Replaced }, yes)
+        for (again in listOf("what?", "sorry?", "pardon", "repeat", "come again"))
+            assertIs<Reply.ConfirmSecret>(core.assistant.followUp(card(), again, ctx()), again)
+        // 6
+        for (no in listOf("no not now", "no leave it", "no skip", "please don't save it"))
+            assertEquals(Reply.NotSaved, core.assistant.followUp(card(), no, ctx()), no)
+        // 3, 5: complaints are not secrets.
+        assertTrue(!S.looksSecret("My wifi password is not working", app.kataa.core.model.MemoryKind.NOTE, null))
+        assertTrue(!S.looksSecret("The pin of my charger is broken", app.kataa.core.model.MemoryKind.NOTE, null))
+        // 4: editing only the value keeps the words.
+        assertEquals("Wifi password at home is NEW1", S.replaceValue("Wifi password at home is blue sky 7", "NEW1"))
+        // 7: "=".
+        assertEquals("1234", S.value("My pin for the bank = 1234")); assertEquals("Bank PIN", S.name("My pin for the bank = 1234"))
+        // 8
+        assertTrue(app.kataa.core.nlu.IntentParser.parse("hi there is milk in the fridge", clock.now, tz) !is app.kataa.core.nlu.Understanding.Ask)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()

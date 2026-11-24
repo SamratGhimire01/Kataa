@@ -987,7 +987,13 @@ class MainActivity : ComponentActivity() {
         dialog().setTitle("Edit").setView(box)
             .setPositiveButton("Save") { _, _ ->
                 // A password stays a password and a PIN a PIN ("Bank PIN is 1235", subject "bank pin").
-                val composed = secretValue?.let { Secrets.compose(service.text.toString(), Secrets.kind(m.body), body.text.toString()) }
+                // Only the value changed: keep the user's own words and subject ("Wifi password at home is ...").
+                val sameService = service.text.toString().trim() == (Secrets.service(m.body) ?: "")
+                val composed = secretValue?.let {
+                    if (sameService) Secrets.replaceValue(m.body, body.text.toString())?.let { b -> b to m.subject }
+                    else null
+                        ?: Secrets.compose(service.text.toString(), Secrets.kind(m.body), body.text.toString())
+                }
                 val text = composed?.first ?: body.text.toString().trim()
                 if (text.isEmpty()) return@setPositiveButton
                 app.cores.worker.execute {

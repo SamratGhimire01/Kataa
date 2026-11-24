@@ -789,7 +789,7 @@ class Assistant(private val core: KataaCore) {
             return handle(raw, ctx)
         }
         if (previous is Reply.ConfirmSecret) {
-            val text = Text.normalize(raw)
+            val text = Text.stripFillers(Text.normalize(raw))
             if (YES.matches(text) || saysYes(text)) return confirmSecret(previous, ctx)
             if (NO.matches(text) || SECRET_NO.matches(text)) return Reply.NotSaved
             // "no it is sunflower124", "it's sunflower124": the corrected value, shown again for a yes.
@@ -798,14 +798,16 @@ class Assistant(private val core: KataaCore) {
                 // "it is not", "it is not right": a no, not a value.
                 if (Regex("^(?:not|wrong|incorrect)\\b").containsMatchIn(fixed)) return Reply.NotSaved
                 // "yes its correct", "its right", "its fine": a yes, not a new value.
-                if (saysYes(fixed) || fixed in YES_FILLER) return confirmSecret(previous, ctx)
+                if (saysYes(fixed) || fixed.split(' ').all { it in YES_FILLER || it in YES_WORD }) return confirmSecret(previous, ctx)
                 val i = raw.lowercase().lastIndexOf(fixed)
                 val v = if (i >= 0) raw.substring(i, i + fixed.length) else fixed
                 return previous.copy(value = v)
             }
             // "that is it", "it is", or anything that would only become a note: ask again rather than drop the password.
             val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone)
-            if (u is Understanding.Unclear || u is Understanding.Save && u.kind == MemoryKind.NOTE && u.secret == null) return previous
+            // "what?", "pardon", "repeat": show the card again.
+            if (u is Understanding.Unclear || u is Understanding.Save && u.kind == MemoryKind.NOTE && u.secret == null ||
+                u is Understanding.Ask && text.split(' ').size <= 2) return previous
             return handle(raw, ctx)
         }
         val memory = when (previous) {
@@ -1093,7 +1095,7 @@ class Assistant(private val core: KataaCore) {
         private val CANCEL = Regex("^(?:cancel|cancel it|cancel that|never mind|nevermind|forget it|stop|do not save|do not save it)$")
         private val YES = Regex("^(?:yes|yeah|yep|yup|ya|haan|ho|correct|right|that is right|that is correct|exactly|save it|save|ok|okay|ok save it|sure|confirm|yes save it|yes correct|perfect)$")
         private val NO = Regex("^(?:no|nope|nah|cancel|cancel it|cancel that|do not save|do not save it|forget it|never mind|nevermind|stop|wrong)$")
-        private val SECRET_NO = Regex("^(?:no |nope )?(?:that is|it is|this is)? ?(?:wrong|not right|not correct|incorrect|not it|not that)$|^(?:no |nope )?(?:do not|dont|don't) save(?: it| that)?$|^(?:no thanks|no thank you|not now|skip|skip it|leave it|cancel|cancel it|never mind)$")
+        private val SECRET_NO = Regex("^(?:no |nope |please )?(?:(?:that is|it is|this is)? ?(?:wrong|not right|not correct|incorrect|not it|not that)|(?:do not|dont|don't) save(?: it| that)?|no thanks|no thank you|not now|skip|skip it|leave it|cancel|cancel it|never mind)$")
         private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that|yes|yeah|yep)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
         private val MORNING_HINT = Regex("\\b(?:wake|wake up|breakfast|morning|sunrise|before work|before office|before college)\\b")
         private val EVENING_HINT = Regex("\\b(?:dinner|supper|tonight|evening|night|after work|after office|after college|sunset)\\b")
@@ -1125,7 +1127,7 @@ class Assistant(private val core: KataaCore) {
         private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
         private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
         private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")
-        private val YES_WORD = setOf("yes", "yeah", "yep", "yup", "ya", "haan", "ho", "correct", "right", "ok", "okay", "sure", "confirm", "save", "exactly", "perfect")
+        private val YES_WORD = setOf("yes", "yeah", "yep", "yup", "ya", "haan", "ho", "correct", "right", "ok", "okay", "sure", "confirm", "save", "exactly", "perfect", "ahead", "alright", "fine", "good")
         private val YES_FILLER = setOf("please", "it", "is", "its", "that", "s", "thats", "all", "absolutely", "totally", "go", "ahead", "do", "good", "fine", "thanks", "thank", "you", "just", "now", "kataa")
         private val SMALL_TALK = Regex("^(?:(?:hi there|hello there|hey there|ok|okay|ok ok|thanks|thank you|thanks a lot|thank you so much|cool|great|nice|good|hi|hello|hey|bye|good night|good morning|yes|yeah|no|sure|alright|all right|fine|wow)\\s*)+$")
         private val NO_TIME = Regex("^(?:no|nope|nah|no thanks|no thank you|skip|skip it|nothing|no time|not now|never mind|nevermind|just save it|just save|save it|later|i will decide later|do not remind me|no need|it is fine|fine|ok|okay|leave it)$")
