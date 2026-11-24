@@ -152,7 +152,14 @@ class BackupService(private val db: SqlDriver, private val clock: TimeSource) {
                 "SELECT m.uuid, j.day FROM journal_entries j JOIN memories m ON m.id = j.memory_id WHERE ? OR m.deleted_at IS NULL ORDER BY j.memory_id",
                 includeTrash,
             ) { JournalEntryDto(it.string(0), it.string(1)) },
-            journalDays = db.query("SELECT day, summary, summary_by_ai, summarized_at, changed_at FROM journal_days ORDER BY day") {
+            journalDays = db.query(
+                """
+                SELECT day, summary, summary_by_ai, summarized_at, changed_at FROM journal_days d
+                WHERE d.entry_count = (SELECT count(*) FROM journal_entries j JOIN memories m ON m.id = j.memory_id
+                                       WHERE j.day = d.day AND m.deleted_at IS NULL)
+                ORDER BY day
+                """.trimIndent(),
+            ) {
                 JournalDayDto(it.string(0), it.stringOrNull(1), it.long(2) != 0L, it.longOrNull(3), it.long(4))
             },
         )
@@ -286,8 +293,8 @@ class BackupService(private val db: SqlDriver, private val clock: TimeSource) {
         }
         file.journalDays.forEach { d ->
             db.execute(
-                "INSERT OR IGNORE INTO journal_days(day, summary, summary_by_ai, summarized_at, changed_at) VALUES (?, ?, ?, ?, ?)",
-                d.day, d.summary, d.summaryByAi, d.summarizedAt, d.changedAt,
+                "INSERT OR IGNORE INTO journal_days(day, summary, summary_by_ai, summarized_at, changed_at, entry_count) SELECT ?, ?, ?, ?, ?, count(*) FROM journal_entries WHERE day = ?",
+                d.day, d.summary, d.summaryByAi, d.summarizedAt, d.changedAt, d.day,
             )
         }
         ImportReport(added, updated, skipped, catsAdded, placesAdded, remindersAdded)

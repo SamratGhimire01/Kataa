@@ -20,13 +20,15 @@ object ListParser {
     private val TD_WORD = Regex("\\b$TD\\b")
     private val LISTEN_VERB = Regex("^(?:please )?(?:can you |could you |let us |let me |i want to |i wanna )?(?:write|make|create|start|take|note|record|prepare|plan|set up|build|begin|dictate|do|new)(?: down| up| out)?(?: me)?$")
     private val SHOW_VERB = Regex("^(?:please )?(?:can you |could you )?(?:show|open|read|see|check|view|display|tell me|give me|what is on|what is in|what are on|what are in|what is|what are|whats on|read out|read me)(?: me)?(?: out)?$")
+    private val NOT_ITEMS = Regex("^(?:is|are|was|were) (?:on|in|at|under|inside|behind|near|with|by|kept|stored|written|saved|full|long|empty|too|very|so|not|getting|piling|done|finished|over|lost|missing|gone)\\b|^(?:of|about|that|which|for|from|with|i|we|you|it)\\b|^(?:is|are) [a-z]+(?:ing|ed)\\b")
     private val OWNER = Regex("^(?:(?:my|the|a|an|our|new|this)(?: |$))+")
 
-    private val ADD = Regex("^(?:please )?(?:can you |could you )?(?:also )?(?:add|put|include|append|write|note)(?: down)? (.+?) (?:to|on|in|into|onto) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
+    private val ADD = Regex("^(?:please )?(?:can you |could you )?(?:also )?(?:add|put|include|append)(?: down)? (.+?) (?:to|on|in|into|onto) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
     private val REMOVE = Regex("^(?:please )?(?:remove|delete|take off|cross out|drop|erase) (.+?) (?:from|off|on|in) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
 
     private val COUNT = Regex("^how many (?:of my )?(?:tasks|things|items|to-?dos|to dos|todos|goals|jobs)\\b.*$")
-    private val LEFT = Regex("^(?:what|which)(?: tasks| things| items| goals)? (?:is|are) (?:still )?(?:left|remaining|pending|not done|undone)\\b.*$|^what (?:else )?(?:is|do i have) (?:still )?left(?: to do)?\\b.*$")
+    private val LEFT = Regex("^(?:what|which)(?: tasks| things| items| goals)? (?:is|are) (?:still )?(?:left|remaining|pending|not done|undone)(?: to do)?$LEFT_TAIL|^what (?:else )?(?:is|do i have) (?:still )?left(?: to do)?$LEFT_TAIL")
+    private const val LEFT_TAIL = "(?: (?:for |on |in )?(?:today|tonight|tomorrow|this month|this week))?(?: (?:on|in|from) (?:my |the )?(?:[a-z]+ )?(?:to-?do list|to do list|todo list|list|tasks|goals))?(?: (?:for )?(?:today|tomorrow|this month))?$"
     private val CHEAPEST = Regex("\\b(?:cheapest|least (?:costly|expensive|cost|money)|lowest cost|cost of the (?:least|smallest|cheapest|lowest)|smallest cost|least task)\\b")
     private val QUICKEST = Regex("\\b(?:quickest|shortest|fastest|easiest|smallest|least time)\\b")
     private val TOTAL_COST = Regex("^how much (?:will|would|does|do|is|did)\\b.*\\b(?:cost|costs|total|spend)\\b|\\btotal cost\\b|^how much money (?:do i|will i|would i|i)\\b")
@@ -38,11 +40,13 @@ object ListParser {
         Regex("^(?:please )?(?:tick|check|cross|strike) off (.+)$") to true,
         Regex("^(?:please )?tick (.+)$") to true,
         Regex("^(?:please )?(?:untick|uncheck|unmark|untick off) (.+)$") to false,
-        Regex("^(.+?) (?:is|are) not (?:done|finished|completed)(?: yet)?$") to false,
-        Regex("^(.+?) (?:is|are) (?:done|finished|completed|complete)$") to true,
+        Regex("^(.+?) (?:is|are) not (?:done|completed)(?: yet)?$") to false,
+        Regex("^(.+?) (?:is|are) (?:done|completed|complete)$") to true,
         Regex("^(?:i am |i have |i )?(?:just )?done with (.+)$") to true,
         Regex("^(?:i )?(?:just |already |have )*(?:finished|completed) (.+)$") to true,
     )
+    /** TICK forms that are ordinary sentences too ("the milk is done", "I finished the book"): the item must match closely. */
+    private const val LOOSE_FROM = 4
     private val LIST_TAIL = Regex("\\s+(?:from|on|in|of) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
 
     private val JOURNAL_START = listOf(
@@ -83,7 +87,7 @@ object ListParser {
                 query = query.substring(0, t.range.first).trim()
             }
             val isDone = done ?: (m.groupValues[2] !in setOf("not done", "undone", "incomplete", "not finished"))
-            if (query.isNotEmpty()) return Understanding.Tick(key, query, isDone)
+            if (query.isNotEmpty()) return Understanding.Tick(key, query, isDone, strict = TICK.indexOfFirst { it.first == r } >= LOOSE_FROM)
         }
         return openList(text, raw, today, nowMs, tz)
     }
@@ -110,10 +114,17 @@ object ListParser {
             ?: qualifier
             ?: (if (before.isEmpty()) defaultKey(noun, today) else null)
             ?: return null
+        val colon = rest.startsWith(":") || rest.startsWith("-")
         val items = rest.replace(Regex("^(?:[:\\-]|is|are|includes?|has)\\s*"), "").trim()
         if (items.isNotEmpty()) {
-            // "my price list is on the desk" is a note, not a list: items need a verb or a day ("today's list: ...").
-            if (show || (key.startsWith("named:") && !listen)) return null
+            // "today's list is on the fridge", "my tasks are piling up", "the list of documents for visa is ...",
+            // "my goals for this year are written ...": sentences about a list, not items. Items need a listen verb,
+            // a colon, or a real to-do list with its day ("tomorrow's to do list pick up the parcel").
+            val todoNoun = Regex("^(?:to-?do|to do|todo|task list|check ?list)").containsMatchIn(noun)
+            val dated = !key.startsWith("named:") && (qualifier != null || before.isNotEmpty())
+            if (show) return null
+            if (!listen && !colon && !(todoNoun && dated)) return null
+            if (!colon && NOT_ITEMS.containsMatchIn(rest)) return null
             val split = app.kataa.core.lists.ListText.split(originalCase(items, raw), nouns = key.startsWith("named:"))
             return if (split.isEmpty()) null else Understanding.AddToList(key, split)
         }
@@ -213,9 +224,13 @@ object ListParser {
         // Dates: "19 november", "november 19th", "the 19th". Only when the words are a date and nothing else.
         if (!Regex("\\d|${MONTHS.joinToString("|")}").containsMatchIn(q)) return null
         if (q.split(' ').size > 4) return null
-        val t = TimeParser.parse("on $q", nowMs, tz) ?: return null
-        if (t.range.first > 1 || t.range.last < q.length + 2) return null
+        // "24 november 2026": the time reader doesn't take years, so the year is set here.
+        val year = Regex(" (20\\d\\d)$").find(q)?.groupValues?.get(1)?.toInt()
+        val dq = if (year != null) q.substring(0, q.length - 5) else q
+        val t = TimeParser.parse("on $dq", nowMs, tz) ?: return null
+        if (t.range.first > 1 || t.range.last < dq.length + 2) return null
         var d = t.fireAt.toLocalDateTime(tz).date
+        if (year != null) return runCatching { LocalDate(year, d.month, d.day) }.getOrNull()
         if (past && d > today) d = runCatching { LocalDate(d.year - 1, d.month, d.day) }.getOrNull() ?: return null
         return d
     }
@@ -236,7 +251,8 @@ object ListParser {
         }
         JOURNAL_INLINE.find(text)?.let { m ->
             val body = m.groupValues[1]
-            if (body.split(' ').size >= 4) return Understanding.Journal(originalCase(body, raw))
+            // "diary is in my bag" is about the diary itself.
+            if (body.split(' ').size >= 4 && !Regex("^(?:my |the |a )?(?:diary|journal) (?:is|are|was|were|has|had)\\b").containsMatchIn(text)) return Understanding.Journal(originalCase(body, raw))
         }
         return null
     }

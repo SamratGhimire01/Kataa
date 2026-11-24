@@ -420,7 +420,7 @@ class Assistant(private val core: KataaCore) {
     /** "Mark milk done" / "untick number 2". Null when no list item matches (then it's an ordinary sentence). */
     private fun tick(u: Understanding.Tick, ctx: AssistantContext): Reply? {
         for (list in searchOrder(u.key, ctx)) {
-            val item = core.lists.find(list, u.query, wantDone = !u.done) ?: core.lists.find(list, u.query) ?: continue
+            val item = core.lists.find(list, u.query, wantDone = !u.done, strict = u.strict) ?: core.lists.find(list, u.query, strict = u.strict) ?: continue
             val after = core.lists.setDone(item.id, u.done) ?: continue
             return Reply.TaskListReply(view(list.key, ctx), if (u.done) ListAction.TICKED else ListAction.UNTICKED, listOf(after))
         }
@@ -486,7 +486,7 @@ class Assistant(private val core: KataaCore) {
 
     /** "...and that's it", "okay stop", "done": the words that end a long dictation are not part of it. */
     private fun stripStopWords(s: String): String =
-        s.trim().replace(Regex("(?i)[,.\\s]*(?:(?:okay|ok|and)\\s+)?(?:that's it|that is it|that's all|that is all|done|stop|stop listening|finish|end|save it|over)[.!]*$"), "").trim()
+        s.trim().replace(Regex("(?i)(?:^|[,.!\\s]+)(?:(?:okay|ok|and|so)\\s+)?(?:that's it|that is it|that's all|that is all|stop listening|save it|i'm done|i am done|okay done|ok done)[.!]*$"), "").trim()
 
     /**
      * The user said yes to a [Reply.ConfirmSecret], maybe after fixing the [value] or the [service] on the card.
@@ -509,6 +509,9 @@ class Assistant(private val core: KataaCore) {
         val m = ASKABLE.find(u.query) ?: return Reply.NotFound(u.query)
         val thing = m.groupValues[2].trim()
         if (thing.isEmpty() || thing.split(' ').size > 5 || ASKABLE_SKIP.containsMatchIn(thing)) return Reply.NotFound(u.query)
+        // Only something of yours ("my mom's birthday", "dad's phone number"), not "what happened at the meeting".
+        val ownMarker = Regex("(?:^| )(?:my|our) |'s ").containsMatchIn(u.query + " ")
+        if (!ownMarker) return Reply.NotFound(u.query)
         val yours = thing.replace(Regex("^(?:my|our)\\s+"), "your ").let { if (it.startsWith("your ")) it else "your $it" }
         return Reply.NotFound(u.query, yours, isWhen = m.groupValues[1] == "when")
     }
@@ -587,10 +590,13 @@ class Assistant(private val core: KataaCore) {
 
     private fun remind(raw: String, u: Understanding.Remind, ctx: AssistantContext): Reply {
         // "Call mom" said twice: keep one. A time or place said the second time is added to the first one.
-        duplicateOf(u.body, MemoryKind.REMINDER)?.let { existing ->
+        // Alarms are all called "Alarm" / "Wake up": each one is its own.
+        val isAlarm = u.persistent && (u.body == "Alarm" || u.body == "Wake up")
+        (if (isAlarm) null else duplicateOf(u.body, MemoryKind.REMINDER))?.let { existing ->
             val active = core.reminders.forMemory(existing.id).any { it.status.name in setOf("SCHEDULED", "SNOOZED") }
             if (u.time == null && u.moment == null) return if (active) Reply.AlreadySaved(existing) else Reply.NeedsTime(existing)
             setLast(existing.id)
+            pickTime(existing, u, raw, ctx)?.let { return it }
             return schedule(existing, u.time, u.moment, u.persistent, ctx)
         }
         val memory = core.memories.save(

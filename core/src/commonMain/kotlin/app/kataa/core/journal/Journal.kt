@@ -22,12 +22,35 @@ class Journal(private val db: SqlDriver, private val memories: MemoryRepository,
         val entries = entries(day)
         db.execute(
             """
-            INSERT INTO journal_days(day, summary, summary_by_ai, summarized_at, changed_at) VALUES (?, ?, 0, NULL, ?)
-            ON CONFLICT(day) DO UPDATE SET changed_at = excluded.changed_at,
+            INSERT INTO journal_days(day, summary, summary_by_ai, summarized_at, changed_at, entry_count) VALUES (?, ?, 0, NULL, ?, ?)
+            ON CONFLICT(day) DO UPDATE SET changed_at = excluded.changed_at, entry_count = excluded.entry_count,
                 summary = CASE WHEN journal_days.summary_by_ai = 1 THEN journal_days.summary ELSE excluded.summary END
             """.trimIndent(),
-            day.toString(), quickSummary(entries), clock.nowMs(),
+            day.toString(), quickSummary(entries), clock.nowMs(), entries.size,
         )
+    }
+
+    /**
+     * An entry was deleted (or restored): that day's summary may quote words that are gone, so it is rebuilt from
+     * the live entries at once (and the AI one is asked for again). Runs in the background upkeep.
+     */
+    fun refreshChangedDays(): Int {
+        val days = db.query(
+            """
+            SELECT d.day FROM journal_days d
+            WHERE d.entry_count != (SELECT count(*) FROM journal_entries j JOIN memories m ON m.id = j.memory_id
+                                    WHERE j.day = d.day AND m.deleted_at IS NULL)
+            """.trimIndent(),
+        ) { LocalDate.parse(it.string(0)) }
+        for (d in days) {
+            val live = entries(d)
+            if (live.isEmpty()) { db.execute("DELETE FROM journal_days WHERE day = ?", d.toString()); continue }
+            db.execute(
+                "UPDATE journal_days SET summary = ?, summary_by_ai = 0, summarized_at = NULL, changed_at = ?, entry_count = ? WHERE day = ?",
+                quickSummary(live), clock.nowMs(), live.size, d.toString(),
+            )
+        }
+        return days.size
     }
 
     fun entries(day: LocalDate): List<Memory> {

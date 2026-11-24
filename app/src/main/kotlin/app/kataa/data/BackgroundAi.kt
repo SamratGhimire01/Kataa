@@ -15,20 +15,23 @@ import app.kataa.ui.Look
  */
 class BackgroundAi : JobService() {
     @Volatile private var stopped = false
+    private val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+    private fun finish(params: JobParameters?) { if (!stopped && finished.compareAndSet(false, true)) jobFinished(params, false) }
 
     override fun onStartJob(params: JobParameters?): Boolean {
         val app = application as KataaApplication
         if (!Look.smartMode(this)) return false
         stopped = false
+        finished.set(false)
         Thread {
             runCatching { app.ensureMind() }
             // Wait for the AI to load (it may have been unloaded to save memory), up to a minute, off the core thread.
             var waited = 0
             while (!stopped && app.mind.status == MindProvider.Status.LOADING && waited < 60_000) { Thread.sleep(1000); waited += 1000 }
-            if (stopped || app.mind.status != MindProvider.Status.READY) { jobFinished(params, false); return@Thread }
+            if (stopped || app.mind.status != MindProvider.Status.READY) { finish(params); return@Thread }
             app.cores.worker.execute {
                 runCatching { if (!stopped) app.cores.core.assistant.summarizeJournals() }
-                jobFinished(params, false)
+                finish(params)
             }
         }.start()
         return true

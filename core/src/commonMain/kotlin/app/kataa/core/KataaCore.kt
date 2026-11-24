@@ -63,6 +63,7 @@ class KataaCore(
         val embedded = embeddings.indexPending()
         val classified = classifier.classifyPending()
         val purged = memories.purgeTrash(trashRetentionMs)
+        runCatching { journal.refreshChangedDays() }
         return ProcessReport(embedded, classified, purged)
     }
 

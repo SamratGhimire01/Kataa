@@ -298,7 +298,8 @@ object Schema {
             summary        TEXT,
             summary_by_ai  INTEGER NOT NULL DEFAULT 0,
             summarized_at  INTEGER,
-            changed_at     INTEGER NOT NULL
+            changed_at     INTEGER NOT NULL,
+            entry_count    INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID
         """,
     ).map { it.trimIndent().trim() }

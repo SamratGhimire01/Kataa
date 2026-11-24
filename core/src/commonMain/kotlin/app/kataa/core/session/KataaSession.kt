@@ -80,19 +80,19 @@ class KataaSession(
      */
     fun tapToTalk(keepListening: Boolean = false) {
         if (_state.value is KataaState.Listening) { listening?.stop(); return }
-        listen(long = keepListening || wantsLongDictation)
+        listen(long = keepListening || wantsLongDictation, untilStopped = keepListening)
     }
 
     /** Starts long dictation for the idea, list or journal Kataa just asked for (the app calls it after speaking the prompt). */
     fun listenLong() { if (_state.value !is KataaState.Listening) listen(long = true) }
 
     /** Hold-to-talk: listening lasts while the button is held. */
-    fun holdStart() { if (_state.value !is KataaState.Listening) listen(long = true) }
+    fun holdStart() { if (_state.value !is KataaState.Listening) listen(long = true, untilStopped = true) }
     fun holdEnd() { if (_state.value is KataaState.Listening) listening?.stop() }
 
-    private fun listen(long: Boolean) {
+    private fun listen(long: Boolean, untilStopped: Boolean = false) {
         val base = speech ?: return fail(SpeechError.UNAVAILABLE)
-        val engine = if (long) LongDictation(base) else base
+        val engine = if (long) LongDictation(base, if (untilStopped) LongDictation.UNTIL_STOPPED else 2) else base
         listening = engine
         _state.value = KataaState.Listening("", 0f)
         val listener = object : SpeechEngine.Listener {

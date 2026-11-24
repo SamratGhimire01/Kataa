@@ -54,7 +54,7 @@ sealed interface Understanding {
     /** "How many tasks are done?", "what's the cheapest task today?". */
     data class ListQuestion(val key: String, val ask: ListAsk) : Understanding
     /** "Mark buy milk done", "tick number 2", "untick the second one". [key] null = today's list, then the others. */
-    data class Tick(val key: String?, val query: String, val done: Boolean) : Understanding
+    data class Tick(val key: String?, val query: String, val done: Boolean, val strict: Boolean = false) : Understanding
     /** "Remove milk from my shopping list". */
     data class RemoveFromList(val key: String?, val query: String) : Understanding
     /** "Today's journal", "dear diary": listen long, then save as today's journal entry. [text] when said inline. */
@@ -253,6 +253,11 @@ object IntentParser {
         val svc = service.trim().removePrefix("my ").removePrefix("the ").trim()
         val v = value.trim()
         if (svc.isEmpty() || v.isEmpty() || svc.split(' ').size > 4 || v.startsWith("in ") || v.startsWith("on ")) return null
+        // "remember to change the wifi password tomorrow" is a reminder; "write down the password for the locker in my
+        // notebook" says where it is written. Neither holds a password.
+        if (Regex("^(?:to |about )|\\b(?:change|update|reset|check|ask|send|get|find|tell|give|share|forgot|forget)\\b").containsMatchIn(svc)) return null
+        if (Regex("\\b(?:in|on|at|under|inside|behind|near|into)(?: my| the| a| our)?$").containsMatchIn(svc)) return null
+        if (Regex("^(?:today|tomorrow|tonight|later|soon|now|again|yesterday|later today|next week|this week|morning|evening)$").matches(v)) return null
         val shownService = restoreCase(svc, raw).replaceFirstChar { it.uppercase() }
         // Said as a plain statement ("my wifi password is x"): keep the user's own words. Otherwise write it clearly.
         val statement = Regex("\\b(?:password|passcode|pin|pin code) (?:is|=) ").containsMatchIn(text) && !text.startsWith("change") && !Regex("\\bnew\\b").containsMatchIn(text)

@@ -142,9 +142,12 @@ class TileMapView(context: Context) : View(context) {
                     val c = URL("https://tile.openstreetmap.org/$key.png").openConnection() as HttpURLConnection
                     c.setRequestProperty("User-Agent", "Kataa/1.0 (Android memory app)")
                     c.connectTimeout = 8000; c.readTimeout = 10000
-                    c.inputStream.use { input -> file.outputStream().use { input.copyTo(it) } }
+                    // Written to a temporary file first: a cut-off download must never be kept as a tile.
+                    val part = File(file.path + ".part")
+                    c.inputStream.use { input -> part.outputStream().use { input.copyTo(it) } }
+                    if (c.contentLength in 1 until part.length() + 1 || c.contentLength <= 0) part.renameTo(file) else part.delete()
                 }
-                BitmapFactory.decodeFile(file.path)
+                BitmapFactory.decodeFile(file.path) ?: run { file.delete(); null }
             }.getOrNull() ?: runCatching { if (file.exists()) BitmapFactory.decodeFile(file.path) else null }.getOrNull()
             main.post {
                 loading -= key

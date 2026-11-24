@@ -150,4 +150,66 @@ class ListsAndJournalTest {
         assertEquals(1, other.journal.entries(today).size)
         assertNull(ListText.parseItem("   "))
     }
+
+    /** The bug-hunter's findings of 24 Nov 2026: each must stay fixed. */
+    @Test fun reviewFindings() {
+        // 1, 2: "write my to do list" listens (also with a date, as the app's button says it).
+        assertEquals(ListKey.day(today), assertIs<Reply.ListeningForList>(say("write my to do list")).key)
+        assertEquals(ListKey.day(LocalDate(2026, 11, 24)), assertIs<Reply.ListeningForList>(say("write my to do list for 24 november 2026")).key)
+        assertEquals("month:2026-11", assertIs<Reply.ListeningForList>(say("write my to do list for november")).key)
+        // 3: ordinary sentences with "finished" don't tick tasks.
+        say("add buy milk and book bus ticket and call the gas man to my to do list")
+        for (s in listOf("the milk is finished", "i finished the book", "the gas is finished")) {
+            assertTrue(say(s) !is Reply.TaskListReply, s)
+        }
+        assertEquals(0, core.lists.items(ListKey.day(today)).count { it.done })
+        // 4-8: sentences about lists, goals, the fridge and the diary are notes.
+        for (s in listOf("today's list is on the fridge", "my goals for this year are written in the red notebook",
+            "the list of documents for visa is passport photo and bank statement", "my tasks are piling up at work",
+            "diary is in my bag", "journal is under the bed")) {
+            val r = say(s)
+            assertTrue(r is Reply.Saved || r is Reply.AlreadySaved, "$s -> $r")
+        }
+        assertTrue(say("what is left in the fridge") !is Reply.TaskListReply)
+        assertEquals(3, core.lists.items(ListKey.day(today)).size)
+        // Shopping list with a colon is a list.
+        assertEquals("named:shopping", list(say("shopping list: rice, dal and oil")).list.key)
+        // 9: dictation keeps the user's words.
+        val j = assertIs<Reply.ListeningForJournal>(say("today's journal"))
+        val saved = assertIs<Reply.JournalShown>(core.assistant.followUp(j, "Today I had lunch with my friend", ctx()))
+        assertEquals("Today I had lunch with my friend", saved.saved!!.body)
+        val l = assertIs<Reply.ListeningForList>(say("write my to do list for tomorrow"))
+        assertEquals(listOf("Plan the weekend", "Meet my friend"), list(core.assistant.followUp(l, "plan the weekend and meet my friend", ctx())).items.map { it.body })
+        val idea = assertIs<Reply.ListeningForIdea>(say("i have an idea"))
+        assertIs<Reply.Saved>(core.assistant.followUp(idea, "open a momo shop near the bus stop", ctx())).let { assertTrue(it.memory.body.endsWith("bus stop"), it.memory.body) }
+        // 17: a deleted journal entry leaves the day's summary.
+        core.memories.trash(saved.saved!!.id)
+        core.processPending()
+        assertTrue(core.journal.day(today).summary?.contains("lunch") != true)
+        // 18: "what happened at the meeting" doesn't offer to remember "your happened at the meeting".
+        assertNull(assertIs<Reply.NotFound>(say("what happened at the meeting")).askFor)
+        assertNull(assertIs<Reply.NotFound>(say("what is the quickest way to kalanki")).askFor)
+    }
+
+    @Test fun reviewFindingsPasswordsAndTimes() {
+        fun confirm(s: String) = core.assistant.handle(s, ctx()).let { if (it is Reply.ConfirmSecret) core.assistant.followUp(it, "yes", ctx()) else it }
+        confirm("my facebook password is Samrat001")
+        // 10, 11: a password is never spoken.
+        val again = core.assistant.handle("my facebook password is Samrat001", ctx())
+        assertTrue("Samrat001" !in ReplyText.spoken(again), ReplyText.spoken(again))
+        assertTrue("Samrat001" !in ReplyText.spoken(say("undo")))
+        // 12, 13: not passwords.
+        assertTrue(say("remember to change the wifi password tomorrow") !is Reply.ConfirmSecret)
+        assertTrue(say("write down the password for the locker in my notebook") !is Reply.ConfirmSecret)
+        // 14: a second alarm is its own, and asks AM or PM; a repeated reminder with a new bare time asks too.
+        say("set an alarm for 6:30 am")
+        assertIs<Reply.PickTime>(say("set an alarm for 7"))
+        say("remind me to call mom at 6 pm")
+        assertIs<Reply.PickTime>(say("remind me to call mom at 8:15"))
+        // 15: "at 7 in the morning" said at 8 AM is tomorrow 7 AM.
+        val r = assertIs<Reply.ReminderSet>(say("remind me to call didi at 7 in the morning"))
+        assertEquals(LocalDateTime(2026, 11, 25, 7, 0), kotlin.time.Instant.fromEpochMilliseconds(r.reminders.single().fireAt!!).let { kotlinx.datetime.TimeZone.of("Asia/Kathmandu").let { z -> it.toLocalDateTimeIn(z) } })
+    }
+
+    private fun kotlin.time.Instant.toLocalDateTimeIn(z: TimeZone) = kotlinx.datetime.Instant.fromEpochMilliseconds(toEpochMilliseconds()).let { kotlinx.datetime.TimeZone.of(z.id); it }.let { i -> kotlinx.datetime.LocalDateTime.parse(java.time.Instant.ofEpochMilli(toEpochMilliseconds()).atZone(java.time.ZoneId.of(z.id)).toLocalDateTime().toString()) }
 }

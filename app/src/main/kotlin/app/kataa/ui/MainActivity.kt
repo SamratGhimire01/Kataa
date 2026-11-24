@@ -536,16 +536,22 @@ class MainActivity : ComponentActivity() {
         when (r) {
             is Reply.Answer -> showAnswer(heard, r.memory, r.shortAnswer)
             is Reply.DidIAnswer -> showDidI(heard, r)
-            is Reply.Saved -> done("Saved", r.memory.body, offerPhoto = r.memory.takeIf { it.kind == MemoryKind.OBJECT_LOCATION })
-            is Reply.AlreadySaved -> done("Already saved", r.memory.body)
+            is Reply.Saved -> done("Saved", shown(r.memory), offerPhoto = r.memory.takeIf { it.kind == MemoryKind.OBJECT_LOCATION })
+            is Reply.AlreadySaved -> done("Already saved", shown(r.memory))
             is Reply.Several -> {
                 // One sentence, several things: show an answer if one was asked, else one "Done" for all.
+                // A question Kataa asked (AM or PM? is this password right? where is it?) needs its card.
+                val asks = r.replies.lastOrNull {
+                    it is Reply.PickTime || it is Reply.ConfirmSecret || it is Reply.NeedsPlace || it is Reply.NeedsTime ||
+                        it is Reply.ListeningForIdea || it is Reply.ListeningForList || it is Reply.ListeningForJournal || (it is Reply.NotFound && it.askFor != null)
+                }
                 val answer = r.replies.firstOrNull { it is Reply.Answer || it is Reply.NeedsUnlock || it is Reply.NotFound }
-                if (answer != null) showReply(heard, answer, speak = false)
-                else done("All set", r.replies.joinToString("\n") { ReplyText.of(it) })
+                if (asks != null) showReply(heard, asks, speak = false)
+                else if (answer != null) showReply(heard, answer, speak = false)
+                else done("All set", r.replies.joinToString("\n") { ReplyText.spoken(it) })
                 return
             }
-            is Reply.Replaced -> done("Updated", r.memory.body)
+            is Reply.Replaced -> done("Updated", shown(r.memory))
             is Reply.NeedsPlace -> {
                 showMessage(ReplyText.of(r), keepOpen = true)
                 openDialog = dialog().setTitle("Where is ${r.placeName}?")
@@ -568,8 +574,8 @@ class MainActivity : ComponentActivity() {
                 done("Reminder set", "${r.memory.body}. ${r.description}." + (r.hint?.let { "\n$it" } ?: "") + permHint)
             }
             is Reply.PlaceSaved -> done("Place saved", ReplyText.of(r))
-            is Reply.Corrected -> done("Fixed", r.after.body)
-            is Reply.Undone -> done("Deleted", r.memory.body)
+            is Reply.Corrected -> done("Fixed", shown(r.after))
+            is Reply.Undone -> done("Deleted", shown(r.memory))
             is Reply.CategoryCreated -> done("Added", "New group: ${r.category.name}")
             is Reply.CategoryList -> { session.dismiss(); openCategory(r.category) }
             is Reply.NeedsUnlock -> {
@@ -612,6 +618,9 @@ class MainActivity : ComponentActivity() {
         main.removeCallbacks(thinkingHint)
         thinking.animate().cancel(); thinking.alpha = 0f
     }
+
+    /** A memory's words for a result card: a password stays masked unless Private is unlocked. */
+    private fun shown(m: Memory): String = if (Secrets.looksSecret(m) && !app.privateUnlocked) Secrets.masked(m.body) else m.body
 
     private fun done(word: String, detail: String, offerPhoto: Memory? = null) {
         if (scene != Scene.TALK) go(Scene.TALK)
@@ -1432,7 +1441,7 @@ class MainActivity : ComponentActivity() {
                     body.addView(LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL; setPadding(0, ui.dpi(10f), 0, ui.dpi(10f))
                         addView(ui.text(13f, 600, look.dim).apply { text = android.text.format.DateFormat.getTimeFormat(this@MainActivity).format(java.util.Date(m.createdAt)) })
-                        addView(ui.text(16f, 500).apply { text = m.body; setTextIsSelectable(true) })
+                        addView(ui.text(16f, 500).apply { text = shown(m); setTextIsSelectable(!Secrets.looksSecret(m)) })
                         alpha = 0f; animate().alpha(1f).setStartDelay(200L + i * 60L).setDuration(500).start()
                     })
                 }

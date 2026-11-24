@@ -142,13 +142,15 @@ class TaskLists(private val db: SqlDriver, private val clock: TimeSource, privat
      * The item [query] means: "number 2" / "the second one" by position, otherwise the one sharing most words
      * ("milk" finds "Buy milk and eggs"). Null when nothing matches well enough.
      */
-    fun find(list: TaskList, query: String, wantDone: Boolean? = null): ListItem? {
+    fun find(list: TaskList, query: String, wantDone: Boolean? = null, strict: Boolean = false): ListItem? {
         val pool = list.items.filter { wantDone == null || it.done == wantDone }.ifEmpty { return null }
         ListText.ordinal(query)?.let { n -> return list.items.getOrNull(n - 1)?.takeIf { it in pool } }
         val q = ListText.words(query)
         if (q.isEmpty()) return null
+        // [strict]: the sentence could be ordinary ("I finished the book"), so the item must be mostly named too
+        // ("book" alone is not "Book bus ticket").
         return pool.map { it to ListText.overlap(q, ListText.words(it.body)) }
-            .filter { (_, s) -> s >= 0.5 }
+            .filter { (item, s) -> s >= 0.5 && (!strict || ListText.overlap(ListText.words(item.body), q) >= 0.5) }
             .maxByOrNull { (_, s) -> s }?.first
     }
 

@@ -193,7 +193,7 @@ object TimeParser {
         var day = date ?: local.date
         var at = LocalDateTime(day, time)
         // "at 8" said at 9 in the morning means 8 in the evening, if that is still ahead today.
-        if (date == null && rrule == null && clock != null && clock!!.hour in 7..11 && !hasAmPm(text) && at <= local) {
+        if (date == null && rrule == null && clock != null && clock!!.hour in 7..11 && !hasAmPm(text) && (partHour == null || partHour!! >= 12) && at <= local) {
             val pm = LocalDateTime(day, LocalTime(clock!!.hour + 12, clock!!.minute))
             if (pm > local) at = pm
         }

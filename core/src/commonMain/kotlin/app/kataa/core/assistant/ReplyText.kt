@@ -11,6 +11,11 @@ object ReplyText {
         r is Reply.Answer && app.kataa.core.memory.Secrets.looksSecret(r.memory) ->
             "Here's your ${app.kataa.core.memory.Secrets.service(r.memory.body) ?: "password"}. It's on the screen."
         r is Reply.Replaced && app.kataa.core.memory.Secrets.looksSecret(r.memory) -> "Updated. I replaced the old one."
+        r is Reply.Saved && app.kataa.core.memory.Secrets.looksSecret(r.memory) -> "Saved. It's locked in Private."
+        r is Reply.AlreadySaved && app.kataa.core.memory.Secrets.looksSecret(r.memory) -> "That one is already saved."
+        r is Reply.Undone && app.kataa.core.memory.Secrets.looksSecret(r.memory) -> "Deleted the ${app.kataa.core.memory.Secrets.service(r.memory.body) ?: "password"}."
+        r is Reply.Corrected && app.kataa.core.memory.Secrets.looksSecret(r.after) -> "Fixed."
+        r is Reply.CategoryList && r.category.isPrivate -> "Here they are. They're on the screen."
         r is Reply.Several -> r.replies.joinToString(" ") { spoken(it) }
         else -> of(r)
     }
