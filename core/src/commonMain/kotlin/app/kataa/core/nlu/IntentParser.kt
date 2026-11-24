@@ -5,9 +5,34 @@ import kotlinx.datetime.TimeZone
 
 enum class QuestionType { WHERE, DID_I, WHEN, GENERAL }
 
+/** A password said by the user: which app or service it is for, and the value exactly as heard. */
+data class Secret(val service: String, val value: String, val kind: String = "password") {
+    /** "Wifi password", "ATM PIN", or just "PIN" / "Password" when no service was named. */
+    val name: String get() = nameOf(service, kind)
+
+    companion object {
+        fun nameOf(service: String, kind: String): String {
+            val k = if (kind.startsWith("pin")) "PIN" else kind
+            val svc = service.trim().let { if (it.lowercase() in setOf("atm", "sim", "upi")) it.uppercase() else it.replaceFirstChar { c -> c.uppercase() } }
+            return if (svc.isEmpty()) k.replaceFirstChar { it.uppercase() } else "$svc $k"
+        }
+    }
+}
+
+enum class ListAsk { COUNT, LEFT, CHEAPEST, QUICKEST, TOTAL_COST, TOTAL_TIME }
+
 /** What the user meant, before anything is stored. */
 sealed interface Understanding {
-    data class Save(val body: String, val kind: MemoryKind, val subject: String?, val objectLocation: ObjectLocationMatch?) : Understanding
+    data class Save(
+        val body: String,
+        val kind: MemoryKind,
+        val subject: String?,
+        val objectLocation: ObjectLocationMatch?,
+        /** A fact with one current value ("my wifi password is ..."): saving it replaces the older one. */
+        val replacesOld: Boolean = false,
+        /** A password or PIN: Kataa shows it back for a yes before saving (voice often mishears them). */
+        val secret: Secret? = null,
+    ) : Understanding
     data class Remind(
         val body: String,
         val time: TimeMatch?,
@@ -29,6 +54,26 @@ sealed interface Understanding {
     data class SavePlace(val name: String, val explicit: Boolean) : Understanding
     data class CreateCategory(val name: String, val description: String?) : Understanding
     data class BrowseCategory(val name: String, val fallbackQuery: String) : Understanding
+    /** "What do I have today?", "what are my reminders": list reminders. [dayOffset] 0 = today, 1 = tomorrow, null = all. */
+    data class Agenda(val dayOffset: Int?) : Understanding
+    /** "I've got an idea": listen longer, then save what follows as an idea. */
+    data object StartIdea : Understanding
+    /** "Today's to-do list" said alone: show it, or listen for the items when it is empty. [listen]: "write my list" always listens. */
+    data class OpenList(val key: String, val listen: Boolean) : Understanding
+    /** "Add milk to my shopping list", "today's to do list: buy milk and call mom". */
+    data class AddToList(val key: String, val items: List<String>) : Understanding
+    /** "How many tasks are done?", "what's the cheapest task today?". */
+    data class ListQuestion(val key: String, val ask: ListAsk) : Understanding
+    /** "Mark buy milk done", "tick number 2", "untick the second one". [key] null = today's list, then the others. */
+    data class Tick(val key: String?, val query: String, val done: Boolean, val strict: Int = 0) : Understanding
+    /** "Remove milk from my shopping list". */
+    data class RemoveFromList(val key: String?, val query: String) : Understanding
+    /** "Today's journal", "dear diary": listen long, then save as today's journal entry. [text] when said inline. */
+    data class Journal(val text: String?) : Understanding
+    /** "Show my journal for yesterday", "what did I do on Monday". */
+    data class ShowJournal(val day: kotlinx.datetime.LocalDate) : Understanding
+    /** "Show me everything", "my timeline": every memory, list and journal day, newest first. */
+    data object Timeline : Understanding
     /** Too short or ambiguous: the app should ask "Save this or search for it?". */
     data class Unclear(val text: String) : Understanding
 }
@@ -47,16 +92,55 @@ object IntentParser {
     private val DID_I = Regex("^(?:did|have) i (?:already )?(.+?)(?: already)?(?: (today|this morning|tonight|yesterday|this evening))?$")
     private val WHERE = Regex("^where(?: is| are| was| were| did i (?:put|leave|keep|park|hide|place|store|drop)| have i (?:put|left|kept|parked)| do i keep| i put| is it that i (?:put|left))?(?: my| the| our)? (.+?)(?: again| now| at)?$")
     private val WHERE_PARKED = Regex("^where (?:did|have) (?:i|we) park(?:ed)?(?: the car| my car)?(?: again)?$|^where is (?:my |the )?(?:car|parking)$")
-    private val QUESTION_START = Regex("^(?:what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
-    private val REMIND_CUE = Regex("\\bremind me\\b|\\b(?:alert|notify|ping|nudge) me\\b|^(?:remember|do not forget|make sure i|make sure to|do not let me forget) to\\b|\\bnag me\\b|\\bkeep reminding me\\b")
+    private val QUESTION_START = Regex("^(?:give me|get me|tell me|show me|send me|i need(?! to\\b(?! know\\b))|i want to know|i forgot|i do not remember|remind me what|what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
+    private val REMIND_CUE = Regex("\\bremind me\\b|^(?:please )?remind (?:to|about)\\b|\\b(?:alert|notify|ping|nudge) me\\b|^(?:remember|do not forget|make sure i|make sure to|do not let me forget) to\\b|^(?:do not let me forget|do not forget|never let me forget)\\b|\\bnag me\\b|\\bkeep reminding me\\b")
     private val OBLIGATION = Regex("\\b(?:i |we )?(?:have to|need to|must|should|got to|gotta|ought to)\\b")
     private val PERSISTENT = Regex("\\b(?:keep reminding me|nag me|until i (?:do it|mark it|say done|finish)|do not let me forget|important|really important|must not forget)\\b")
     private val LOG_DONE = Regex("^(?:i |we )(?:just |already |have |have just )*(took|locked|fed|paid|turned off|switched off|turned on|switched on|closed|watered|gave|called|sent|charged|cleaned|took out|unplugged|plugged in|finished|did|submitted|returned|ate|drank|shut)\\b\\s*(.*)$")
 
+    private val AGENDA = Regex(
+        "^(?:what|anything)(?: else)?(?: do| have)? (?:i|we) (?:have|got|need to do|have to do|have planned)(?: to do| planned| on)?(?: (today|tonight|tomorrow|this week|now))?$" +
+            "|^(?:what are|what is|show|list|show me|tell me|read|read me|what about)(?: all)?(?: of)? my (?:reminders|tasks|plans|plan|to dos|todos|to do list|schedule|agenda)(?: for)?(?: (today|tonight|tomorrow|this week))?$" +
+            "|^(?:do i have |are there |i have )?any (?:reminders|tasks|plans)(?: for)?(?: (today|tonight|tomorrow|this week))?$" +
+            "|^(?:my )?(?:reminders|agenda|schedule|plans)(?: for)?(?: (today|tonight|tomorrow|this week))?$",
+    )
+    private val IDEA = Regex("^(?:i |we )?(?:have |have got |got |have just got |just got )?(?:a |an |one |another |a new |new |big |a big )?(?:idea|thought)(?: for you| to save)?$" +
+        "|^(?:note|save|write|remember|take)(?: down)? (?:this|my|an|a|one)(?: new)? idea$|^(?:let me|i want to|i wanna) (?:tell you|share)(?: an| my| one)? (?:idea|something|a thought)$|^(?:listen|start) idea(?: mode)?$|^idea time$")
+    private val TIMELINE = Regex("^(?:please )?(?:show|open|give)?(?: me)? ?(?:everything|all my memories|all memories|all of it|all my stuff|my timeline|the timeline|timeline|everything i saved|everything i have saved)$")
+    private val ALARM = Regex("^(?:please )?(?:can you |could you )?(?:wake me(?: up)?|set (?:an |the |my |a )?alarm|alarm)\\b(?: (?:for|at))?\\s*(.*)$")
+    /** "write the password of wifi sunflower123", "save password for gmail is x". Group 1: what follows the keyword. */
+    private val PW_OF = Regex("^(?:please )?(?:write|save|note|store|remember|keep|add|put)(?: down)?(?: that)?(?: my| the| this| a)? (?:password|passcode|pin|pin code) (?:of|for) (.+)$")
+    /** "the password for gmail is x" said as a statement. */
+    private val PW_FOR_IS = Regex("^(?:my |the |our )?(?:password|passcode|pin|pin code) (?:of|for) (?:my |the |our )?(.+?) (?:is|=) (.+)$")
+    /** "save my instagram password samrat@123", "write wifi password as abc". */
+    private val PW_SAVE = Regex("^(?:please )?(?:write|save|note|store|remember|keep|add|put)(?: down)?(?: that)?(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: is| as| =)? (\\S.*)$")
+    /** "netflix password is nf2026" without "my". */
+    /** "not working", "too long", "the same as before": said about a password, never the password itself. */
+    private val COMPLAINT = Regex("(?:not \\w+(?: \\w+)?|wrong|incorrect|invalid|expired|expiring(?: \\w+){0,2}|changed|changing|reset|too \\w+|very \\w+|so \\w+|really \\w+|case sensitive|(?:the )?same(?: as \\w+(?: \\w+)?)?|weak|strong|long|short|forgotten|lost|locked|blocked|working|working again|fixed|correct|right|different|difficult|complicated|hard to \\w+|easy to \\w+|tricky|stupid|annoying|useless|broken|saved|stored|secret|private|hidden|written down|somewhere)")
+    /** "not working since yesterday", "very hard to remember": a complaint, whatever follows. */
+    private val COMPLAINT_START = Regex("^(?:not|still not|no longer|wrong|too|very|expired|expiring|changed but|changed and|fixed|working|hard to|difficult to|easy to|the same as)\\b")
+    /** "my netflix password is changed to moonlight", "my gmail password changed to tiger", "... is now Moonlight22". */
+    private val PW_CHANGED = Regex("^(?:my |the |our )?(.+?) (?:password|passcode|pin|pin code) (?:is |was |has been |got )?(?:changed|updated|reset|now changed) (?:to|into|as) (.+)$|^(?:my |the |our )?(.+?) (?:password|passcode|pin|pin code) is now (.+)$")
+    /** "wifi password at home is blue sky 7" -> ("wifi at home", "blue sky 7"). */
+    private val PW_AT = Regex("^(?:my |the |our )?((?:[a-z0-9'-]+ )?[a-z0-9'-]+) (?:password|passcode|pin|pin code) ((?:at|in|for) (?:my |the |our )?[a-z0-9'-]+(?: [a-z0-9'-]+)?) (?:is|=) (.+)$")
+    /** "my pin is 1234", "my password is abc123": no service named, so the kind of secret is its name. */
+    private val PW_MY = Regex("^(?:my|our) (password|passcode|pin|pin code) (?:is|=) (.+)$")
+    private val PW_BARE = Regex("^(?:the |our )?((?:[a-z0-9'-]+ ){0,2}?[a-z0-9'-]+) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
+    /** "change my facebook password to x", "my new facebook password is x". */
+    private val PW_CHANGE = Regex("^(?:please )?(?:change|update|set|reset|replace)(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: to| as| into| with|=)? (\\S.*)$|^(?:my |the |our )?new (.+?) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
+
+    /** "My facebook password is what" / "my locker code is what is": a question said backwards. */
+    private val TRAILING_WHAT = Regex("\\b(?:is|are|was)? ?what(?: is| was| it is)?$")
+    /** "My wifi password is abc123", "my locker code is 4412": a fact with a value. A newer one replaces the older. */
+    private val KEY_VALUE = Regex("^(?:my|our|the) ((?:[a-z0-9']+ ){0,3}?(?:password|passcode|pin|pin code|code|number|no|id|username|user name|email|account|account number|login|otp|combination|size|blood group|birthday|address|plate|plate number|license number|policy number|locker|wifi|wi-fi)) (?:is|are|=) (.+)$")
+    /** A task said on its own ("call mom", "buy milk"): becomes a reminder and Kataa asks when. */
+    private val TASK_START = Regex("^(?:please )?(?:call|phone|ring|text|message|email|mail|buy|get(?! me\\b)|pick up|collect|pay|book|order|send|submit|return|renew|recharge|top up|bring|take|fix|clean|wash|charge|meet|visit|cancel|check|print|post|transfer|withdraw|deposit|apply for|finish|complete|write|reply to|wish|congratulate)\\b")
+    private val NOT_A_TASK = Regex("\\b(?:is|are|was|were|am)\\b")
+
     private val HOME_WORDS = setOf("home", "house", "office", "work", "hostel", "room", "my room")
 
-    fun parse(raw: String, nowMs: Long, tz: TimeZone, knownPlaceNames: Set<String> = emptySet()): Understanding {
-        val text = Text.normalize(raw)
+    fun parse(raw: String, nowMs: Long, tz: TimeZone, knownPlaceNames: Set<String> = emptySet(), lists: Boolean = true): Understanding {
+        val text = Text.stripFillers(Text.normalize(raw))
         if (text.isEmpty()) return Understanding.Unclear(raw)
         val questionMark = Text.isQuestionMarked(raw)
 
@@ -74,12 +158,39 @@ object IntentParser {
             if (name.split(' ').size <= 3 && TimeParser.parse(text, nowMs, tz) == null) return Understanding.SavePlace(name, explicit = false)
         }
 
+        if (IDEA.matches(text)) return Understanding.StartIdea
+        if (TIMELINE.matches(text)) return Understanding.Timeline
+        if (lists) ListParser.parse(text, raw, nowMs, tz)?.let { return it }
+        AGENDA.find(text)?.let { m ->
+            val day = m.groupValues.drop(1).firstOrNull { it.isNotEmpty() }
+            return Understanding.Agenda(when (day) { "today", "tonight", "now" -> 0; "tomorrow" -> 1; else -> null })
+        }
+        password(text, raw)?.let { return it }
+        ALARM.find(text)?.let { m ->
+            val wake = text.contains("wake")
+            val whenText = m.groupValues[1].trim()
+            val at = if (Regex("^(?:\\d|noon\\b|midnight\\b)").containsMatchIn(whenText)) "at $whenText" else whenText
+            val t = TimeParser.parse(at, nowMs, tz)
+            if (t != null || whenText.isEmpty()) {
+                return Understanding.Remind(if (wake) "Wake up" else "Alarm", t, null, persistent = true)
+            }
+        }
+
+        // "my facebook password is what" / "... what is": the recognizer heard a question backwards.
+        if (TRAILING_WHAT.containsMatchIn(text) && text.split(' ').size <= 10) {
+            return Understanding.Ask(TRAILING_WHAT.replace(text, "").trim().ifEmpty { text }, QuestionType.GENERAL, null)
+        }
+
         // Reminders before questions: "remind me what time..." is rare; "can you remind me to..." is common.
         val remindCue = REMIND_CUE.containsMatchIn(text)
         val time = TimeParser.parse(text, nowMs, tz)
-        val moment = PlaceParser.parse(text, knownPlaceNames)
+        val moment = PlaceParser.parse(text, knownPlaceNames)?.takeUnless { m ->
+            // "in one hour and fifteen minutes": the words are the time, not a place.
+            time != null && time.parts.ifEmpty { listOf(time.range) }.any { r -> m.range.first <= r.last && r.first <= m.range.last }
+        }
         val obligation = OBLIGATION.containsMatchIn(text)
-        if (remindCue || (obligation && (time != null || moment != null))) {
+        val task = TASK_START.containsMatchIn(text) && !NOT_A_TASK.containsMatchIn(text) && !questionMark
+        if (remindCue || (obligation && (time != null || moment != null)) || task) {
             return Understanding.Remind(reminderBody(text, raw, time, moment), time, moment, PERSISTENT.containsMatchIn(text))
         }
 
@@ -102,6 +213,14 @@ object IntentParser {
             return Understanding.Ask(text, type, null)
         }
 
+        KEY_VALUE.find(text)?.let { m ->
+            val value = m.groupValues[2].trim()
+            if (value.isNotEmpty() && !value.startsWith("in ") && !value.startsWith("on ") && !value.startsWith("under ")) {
+                // A sentence about a password that is not one ("my wifi password is not working") never replaces it.
+                val aboutSecret = Regex("\\b(?:password|passcode|pin|pin code|pattern|otp)$").containsMatchIn(m.groupValues[1].trim())
+                return Understanding.Save(saveBody(raw), MemoryKind.FACT, Text.subjectKey(m.groupValues[1]).takeUnless { aboutSecret }, null, replacesOld = !aboutSecret)
+            }
+        }
         LOG_DONE.find(text)?.let { m ->
             val obj = m.groupValues[2]
             if (ObjectLocation.extract(text) == null) {
@@ -112,8 +231,22 @@ object IntentParser {
             return Understanding.Save(saveBody(raw), MemoryKind.OBJECT_LOCATION, ol.subjectKey, ol)
         }
         val content = ObjectLocation.stripLeadIn(text)
+        // A few words with no verb ("facebook password", "passport", "wifi code") is someone looking something
+        // up, not saving it: a note always says something about the thing.
+        if (content == text && looksLikeLookup(text)) return Understanding.Ask(text, QuestionType.GENERAL, null)
         if (content.split(' ').size < 2) return Understanding.Unclear(raw)
         return Understanding.Save(saveBody(raw), MemoryKind.NOTE, null, null)
+    }
+
+    private val VERBISH = Regex("\\b(?:is|are|am|was|were|be|been|has|have|had|do|does|did|will|can|put|kept|left|in|on|at|under|inside|behind|to|from|for|with|and|because|that|then|i|we|he|she|they|it)\\b")
+
+    /** Up to three words and nothing that makes it a statement ("dad likes tea" has a verb in the middle). */
+    private fun looksLikeLookup(text: String): Boolean {
+        val words = text.split(' ').filter { it.isNotBlank() }
+        if (words.size !in 1..3 || VERBISH.containsMatchIn(text)) return false
+        if (words.any { Regex("(?:ed|ing)$").containsMatchIn(it) && it.length > 4 }) return false
+        if (words.size == 3 && words[1].endsWith("s") && !words[1].endsWith("ss")) return false
+        return true
     }
 
     /** "take my meds" / "took the meds" -> "take med"; "locked the front door" -> "lock front door". */
@@ -122,6 +255,97 @@ object IntentParser {
         if (words.isEmpty()) return null
         val verb = Text.baseVerb(words.first())
         return (listOf(verb) + words.drop(1).map(Text::singular)).joinToString(" ")
+    }
+
+    /** Every way of saying a password: one current value per service, so a new one replaces the old. */
+    private fun password(text: String, raw: String): Understanding.Save? {
+        // "my wifi password is pa$$?", "... is hello123?": a statement that ends in "?" is not a question.
+        val endsInValue = Regex("(?i)\\b(?:password|passcode|pin)\\b.*\\s(?:is|=)\\s+\\S+\\?$").containsMatchIn(raw.trim()) &&
+            !Regex("^(?:what|which|where|when|who|how|is|are|do|did|does|can|could|have|has)\\b").containsMatchIn(text)
+        if (Text.isQuestionMarked(raw) && !endsInValue || TRAILING_WHAT.containsMatchIn(text)) return null
+        val (service, value) = (PW_CHANGED.find(text) ?: PW_CHANGE.find(text))?.let { m ->
+            if (m.groupValues[1].isNotEmpty()) m.groupValues[1] to m.groupValues[2] else m.groupValues[3] to m.groupValues[4]
+        } ?: PW_FOR_IS.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
+            ?: PW_OF.find(text)?.let { m ->
+                // "wifi sunflower123" or "wifi is sunflower123": the last word is the password unless "is" splits it.
+                val rest = m.groupValues[1].removePrefix("my ").removePrefix("the ")
+                val i = rest.indexOf(" is ")
+                when {
+                    i > 0 -> rest.substring(0, i) to rest.substring(i + 4)
+                    rest.contains(' ') -> rest.substringBeforeLast(' ') to rest.substringAfterLast(' ')
+                    else -> return null
+                }
+            }
+            ?: PW_SAVE.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
+            ?: PW_AT.find(text)?.let { "${it.groupValues[1]} ${it.groupValues[2]}" to it.groupValues[3] }
+            ?: PW_MY.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
+            ?: PW_BARE.find(text)?.takeIf { it.groupValues[1] !in setOf("my", "your", "his", "her", "what", "which") }?.let { it.groupValues[1] to it.groupValues[2] }
+            ?: return null
+        // The kind of secret ("pin", "passcode", "password") and the service without "my"/"the" ("" when none is named).
+        val kind = Regex("\\b(pin|passcode|password)\\b").find(text)?.groupValues?.get(1) ?: "password"
+        val svc = service.trim().replace(Regex("^(?:(?:my|the|our)\\b\\s*)+"), "").trim()
+            .let { if (it in setOf("password", "passcode", "pin", "pin code")) "" else it }
+        // "my pin is one two three four": the digits.
+        val v = value.trim().let { s ->
+            val digits = mapOf("zero" to "0", "oh" to "0", "one" to "1", "two" to "2", "three" to "3", "four" to "4", "five" to "5", "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9")
+            val w = s.split(' ')
+            if (w.size >= 3 && w.all { it in digits || it.length == 1 && it[0].isDigit() }) w.joinToString("") { digits[it] ?: it } else s
+        }
+        if (v.isEmpty() || svc.split(' ').size > 5) return null
+        // Said as a plain statement ("my wifi password is x"): keep the user's own words. Otherwise write it clearly.
+        val statement = Regex("\\b(?:password|passcode|pin|pin code)(?: (?:at|in|for) (?:my |the |our )?[a-z0-9'-]+(?: [a-z0-9'-]+)?)? (?:is|=) ").containsMatchIn(text) &&
+            !text.startsWith("change") && !Regex("\\bnew\\b").containsMatchIn(text)
+        // Capitals or digits as typed/heard ("On The Rocks", "on123") mean a real password, not a place.
+        val typed = originalCase(v, raw).let { o -> o.any(Char::isUpperCase) || o.any(Char::isDigit) }
+        // "the wifi password is written on the router", "... is on the fridge": where it is, not what it is.
+        if (!typed && Regex("^(?:(?:written|stuck|kept|saved|stored|pasted|taped|hidden|noted)(?: down| up)? (?:on|in|at|under|inside|behind|near|by|with|somewhere)|(?:on|in|at|under|inside|behind|near|with|beside|next to|by) [a-z]+|somewhere)\\b").containsMatchIn(v)) return null
+        // "my wifi password is not working", "... is wrong", "... is too long": about the password, not the password.
+        if (!typed && (COMPLAINT.matches(v) || COMPLAINT_START.containsMatchIn(v))) return null
+        if (Regex("^(?:to |about )").containsMatchIn(svc)) return null
+        if (!statement) {
+            // "remember to change the wifi password tomorrow" is a reminder; "write down the password for the locker in
+            // my notebook" says where it is written. Neither holds a password. ("find my iphone password is x" does.)
+            if (Regex("\\b(?:change|update|reset|check|ask|send|get|find|tell|give|share|forgot|forget)\\b").containsMatchIn(svc)) return null
+            if (Regex("\\b(?:in|on|at|under|inside|behind|near|into)(?: my| the| a| our)?$|\\b(?:in|on|at|under|inside|behind|near|into) (?:my|the|a|our|his|her)\\b").containsMatchIn(svc)) return null
+            if (Regex("^(?:today|tomorrow|tonight|later|soon|now|again|yesterday|later today|next week|this week|morning|evening)$").matches(v)) return null
+            // "change the wifi password tomorrow morning", "... after 3 days": the value is a time, so this is a reminder.
+            if (v.contains(' ') || v.all(Char::isLetter)) TimeParser.parse(v, 0L, TimeZone.UTC)?.let { t ->
+                if (t.range.first == 0 && t.range.last >= v.length - 1) return null
+            }
+        }
+        val shownService = if (svc.isEmpty()) "" else restoreCase(svc, raw).let { s -> if (s.length <= 4 && s == s.lowercase() && svc in setOf("atm", "sim", "upi")) s.uppercase() else s.replaceFirstChar { it.uppercase() } }
+        val shown = originalCase(v, raw)
+        val exact = originalValue(v, raw)
+        val said = value.trim()
+        val body = if (statement) saveBody(raw).let { b -> if (!exact.endsWith("?")) b.removeSuffix("?").trimEnd() else b }
+            .let { b -> if (b.endsWith(shown) && exact.length > shown.length) b + exact.substring(shown.length) else b }
+            // "my atm pin is one two three four": stored as the digits confirmed on the card.
+            .let { b -> if (v != said) b.replace(Regex("(?i)\\b(?:(?:zero|oh|one|two|three|four|five|six|seven|eight|nine|\\d)\\s*){3,}$"), v) else b }
+            else "${Secret.nameOf(shownService, kind)} is $exact"
+        return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey(if (svc.isEmpty()) kind else "$svc $kind"), null, replacesOld = true,
+            secret = Secret(shownService, exact, kind))
+    }
+
+    /**
+     * The password as typed, with the symbols that end it ("G00gle!", "pa$$?") which normalizing drops. A single "."
+     * or "," at the very end is the end of the sentence, not the password.
+     */
+    private fun originalValue(lower: String, raw: String): String {
+        val i = raw.lowercase().lastIndexOf(lower)
+        if (i < 0) return lower
+        var end = i + lower.length
+        while (end < raw.length && !raw[end].isWhitespace()) end++
+        var v = raw.substring(i, end)
+        if (end == raw.trimEnd().length && v.length > lower.length && (v.endsWith(".") || v.endsWith(",")) && !v.endsWith("..")) v = v.dropLast(1)
+        // "hello123?": the recognizer's question mark. Kept only after symbols ("pa$$?").
+        if (end == raw.trimEnd().length && v.endsWith("?") && v.dropLast(1).all(Char::isLetterOrDigit)) v = v.dropLast(1)
+        return v
+    }
+
+    /** [lower] as the user typed it (passwords are case-sensitive), when it can be found in [raw]. */
+    private fun originalCase(lower: String, raw: String): String {
+        val i = raw.lowercase().lastIndexOf(lower)
+        return if (i >= 0) raw.substring(i, i + lower.length) else lower
     }
 
     /** The note as the user said it, minus "remember that" and similar, keeping their capitalization. */
@@ -136,28 +360,41 @@ object IntentParser {
     private fun reminderBody(text: String, raw: String, time: TimeMatch?, moment: MomentMatch?): String {
         // Remove the time and moment spans (rightmost first so indexes stay valid).
         var s = text
-        listOfNotNull(time?.range, moment?.range).sortedByDescending { it.first }.forEach { r ->
+        // Time pieces one by one ("tomorrow to call didi in the morning" keeps "to call didi"), overlaps merged.
+        val pieces = ((time?.parts?.takeIf { it.isNotEmpty() } ?: listOfNotNull(time?.range)) + listOfNotNull(moment?.range)).sortedBy { it.first }
+        val merged = mutableListOf<IntRange>()
+        for (r in pieces) {
+            val last = merged.lastOrNull()
+            if (last != null && r.first <= last.last + 1) merged[merged.size - 1] = last.first..maxOf(last.last, r.last) else merged += r
+        }
+        merged.asReversed().forEach { r ->
             if (r.first >= 0 && r.last < s.length) s = s.removeRange(r)
         }
         s = s.replace(Regex("\\s+"), " ").trim().replace(REMINDER_LEAD, "").replace(REMINDER_TAIL, "")
         s = s.replace(Regex("\\s+"), " ").trim().trimEnd(',', ' ')
-        s = s.replace(Regex("\\s+(?:and|to|at|in|on|when|by|please|that|then)$"), "").trim()
+        s = s.replace(Regex("(?:\\s+(?:and|to|at|in|on|when|by|please|that|then|the|a|on the|by the))+$"), "").trim()
         if (s.isEmpty()) s = text
         return Text.sentence(restoreCase(s, raw))
     }
 
     private val REMINDER_LEAD = Regex(
         "^(?:(?:hey |ok |okay )?(?:kataa|kai)\\s*)?(?:please |can you |could you |would you )*" +
-            "(?:keep reminding me|remind me|nag me|alert me|notify me|ping me|nudge me|remember|do not forget|do not let me forget|make sure i|make sure|note)?" +
+            "(?:keep reminding me|remind me|remind|nag me|alert me|notify me|ping me|nudge me|remember|do not forget|do not let me forget|make sure i|make sure|note)?" +
             "(?: to| that| about)?\\s*(?:i |we )?(?:have to|need to|must|should|got to|gotta|ought to|will)?\\s*(?:to )?",
     )
-    private val REMINDER_TAIL = Regex("\\s*(?:please|for me|okay|ok|thanks|thank you|until i do it|it is important|important)$")
+    private val REMINDER_TAIL = Regex("\\s+(?:please|for me|okay|ok|thanks|thank you|until i do it|it is important|important)$")
 
     /** Puts back capitalization the user typed ("big mart" -> "Big Mart" if they wrote it that way). */
     private fun restoreCase(lower: String, raw: String): String {
         val originals = raw.split(Regex("[^\\p{L}\\p{N}'-]+")).filter { it.any(Char::isUpperCase) }.associateBy { it.lowercase() }
         return lower.split(' ').joinToString(" ") { originals[it] ?: it }
     }
+
+    private val FILLER = setOf("my", "the", "a", "an", "our", "to", "please", "that", "i", "is", "are", "am", "at", "in", "on", "of", "and", "remember", "note", "save", "kataa", "okay", "ok")
+
+    /** Same words in any order, ignoring filler and plurals: "Call my mom" == "call mom" == "Call mom." */
+    fun sameKey(text: String): String =
+        Text.normalize(text).split(Regex("[^a-z0-9]+")).filter { it.isNotBlank() && it !in FILLER }.map(Text::singular).sorted().joinToString(" ")
 
     fun isHomeWord(name: String) = Text.stripDeterminers(name) in HOME_WORDS
 

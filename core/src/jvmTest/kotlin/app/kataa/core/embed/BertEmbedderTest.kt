@@ -58,6 +58,18 @@ class BertEmbedderTest {
         println("BENCH embed: ${"%.1f".format((System.nanoTime() - t0) / 1e6 / texts.size)} ms per memory")
     }
 
+    @Test fun memoryMappedModelGivesSameVectors() {
+        val dir = RealModel.dir ?: return
+        val mapped = java.io.RandomAccessFile(dir.resolve("model_quantized.onnx"), "r").channel.use {
+            it.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, it.size())
+        }
+        Models.bgeSmall(mapped, dir.resolve("vocab.txt").readText()).use { e ->
+            val a = e.embed("My keys are in the blue drawer")
+            val b = RealModel.embedder!!.embed("My keys are in the blue drawer")
+            assertTrue(Vectors.dot(a, b) > 0.9999)
+        }
+    }
+
     @Test fun meaningBeatsWords() {
         val e = RealModel.embedder ?: return
         val q = e.embedQuery("where are my car keys")

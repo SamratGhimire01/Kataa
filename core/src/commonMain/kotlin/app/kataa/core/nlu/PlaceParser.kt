@@ -52,7 +52,7 @@ object PlaceParser {
     private val BT_AUDIO = Regex("\\b(?:when|once) i (?:put on|connect|plug in|wear) (?:my |the )?(earbuds|earphones|headphones|airpods|buds)\\b")
     private val LEAVE = Regex("\\b(?:when|once|as soon as|before) i (?:leave|exit|go out of|head out of|walk out of)(?: (?:the |my )?$NAME)?$END")
     private val LEAVE_BARE = Regex("\\bbefore i (?:go out|head out|leave)\\b")
-    private val ARRIVE = Regex("\\b(?:when|once|as soon as|next time|whenever|the moment) i (?:get|reach|arrive|am|come|go|walk|enter)(?: (?:to|at|in|into|back to|back at|inside))? (?:the |my )?$NAME$END")
+    private val ARRIVE = Regex("\\b(?:when|once|as soon as|next time|whenever|the moment) i (?:get|reach|arrive|am|come|go|walk|enter)(?: (?:to|at|in|into|back to|back at|inside))? (?:the |my |any |a |an )?$NAME$END")
     private val HERE = Regex("\\b(?:here|this place|this spot)(?: next time)?\\b")
     private val AT = Regex("\\b(?:at|in|from) (?:(any|a|an|the) )?$NAME$END")
 
@@ -74,7 +74,7 @@ object PlaceParser {
         ARRIVE.find(text)?.let { m ->
             val name = m.groupValues[1].trim()
             if (HERE.matches(name) || name == "here") return MomentMatch.Place(PlaceRef.Here, onExit = false, m.range)
-            if (name.isNotEmpty() && name !in NOT_PLACES) return MomentMatch.Place(refFor(name, null), onExit = false, m.range)
+            if (name.isNotEmpty() && name !in NOT_PLACES && (name in knownPlaceNames || !Relations.PERSON.matches(name))) return MomentMatch.Place(refFor(name, null), onExit = false, m.range)
         }
         Regex("\\bnext time i am here\\b|\\bwhen i am here (?:next|again)\\b|\\b(?:remind me )?here next time\\b").find(text)?.let {
             return MomentMatch.Place(PlaceRef.Here, onExit = false, it.range)
@@ -86,6 +86,7 @@ object PlaceParser {
             val name = m.groupValues[2].trim()
             if (name.isEmpty() || name in NOT_PLACES || name.split(' ').size > 4) return@forEach
             if (name.first().isDigit()) return@forEach // "at 5", "in 2 hours"
+            if (name !in knownPlaceNames && Relations.PERSON.matches(name)) return@forEach // "from (my) didi" is a person
             val kind = typeOf(name)
             val known = name in knownPlaceNames
             // Things after "the/a" are usually objects ("in the drawer") unless they are a known kind or saved place.

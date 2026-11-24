@@ -65,7 +65,7 @@ class HybridSearch(
         vec.forEachIndexed { i, (id, _) -> fused[id] = (fused[id] ?: 0.0) + 1.0 / (RRF_K + i + 1) }
 
         val byId = memories.getMany(fused.keys)
-        val hidden = if (options.includePrivate) emptySet() else privateIds(fused.keys)
+        val hidden = if (options.includePrivate) emptySet() else memories.privateIds(fused.keys)
         val superseded = memories.supersededIds(fused.keys)
         val ftsRank = fts.withIndex().associate { (i, id) -> id to i + 1 }
         val sim = vec.associate { (id, d) -> id to 1.0 - d }
@@ -99,7 +99,10 @@ class HybridSearch(
     private fun keywordCoverage(queryTokens: List<String>, m: Memory): Double {
         if (queryTokens.isEmpty()) return 0.0
         val words = FtsQuery.tokens(m.body + " " + (m.extractedText ?: ""), maxTokens = 512)
-        val found = queryTokens.count { q -> words.any { w -> sameStem(q, w) } }
+        val found = queryTokens.count { q ->
+            val alike = listOf(q) + (FtsQuery.SYNONYMS[q] ?: emptySet())
+            words.any { w -> alike.any { sameStem(it, w) } }
+        }
         return found.toDouble() / queryTokens.size
     }
 
@@ -156,22 +159,6 @@ class HybridSearch(
         }
     }
 
-    private fun privateIds(ids: Set<Long>): Set<Long> {
-        if (ids.isEmpty()) return emptySet()
-        val out = HashSet<Long>()
-        ids.chunked(500).forEach { chunk ->
-            val ph = chunk.joinToString(",") { "?" }
-            db.query(
-                """
-                SELECT DISTINCT a.memory_id FROM memory_categories_active a
-                JOIN categories c ON c.id = a.category_id
-                WHERE c.is_private = 1 AND a.memory_id IN ($ph)
-                """.trimIndent(),
-                *chunk.toTypedArray(),
-            ) { it.long(0) }.forEach(out::add)
-        }
-        return out
-    }
 
     companion object {
         private const val MIN_KEYWORD_COVERAGE = 0.6

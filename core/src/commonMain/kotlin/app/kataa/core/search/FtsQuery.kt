@@ -19,6 +19,18 @@ object FtsQuery {
         "near", // FTS5 keyword; also rarely useful as a search term
     )
 
+    /** Words people use for the same thing ("money" ~ "rupees"): a question word counts as found if one of these is. */
+    val SYNONYMS = mapOf(
+        "money" to setOf("rupees", "rupee", "rs", "npr", "cash", "paisa", "dollars", "dollar", "owe", "owes", "loan", "lent", "borrowed"),
+        "birthday" to setOf("born", "bday", "birth"),
+        "password" to setOf("pass", "pin", "code", "passcode"),
+        "wifi" to setOf("wi", "internet", "router"),
+        "phone" to setOf("mobile", "number", "contact"),
+        "address" to setOf("lives", "stay", "house"),
+        "car" to setOf("parked", "parking"),
+        "bike" to setOf("parked", "parking", "scooter", "scooty"),
+    )
+
     /** Lowercased content tokens, stopwords removed, order kept, duplicates dropped. */
     fun tokens(text: String, maxTokens: Int = 12): List<String> {
         val out = LinkedHashSet<String>()

@@ -13,7 +13,7 @@ package app.kataa.core.db
  * - Trashing a memory cancels its pending reminders.
  */
 object Schema {
-    const val VERSION = 1
+    const val VERSION = 3
 
     /** Created separately because its dimension depends on the active embedding model. */
     fun createVectorTable(dimension: Int): String {
@@ -261,4 +261,55 @@ object Schema {
         ) WITHOUT ROWID
         """,
     ).map { it.trimIndent().trim() }
+
+    /**
+     * v2: to-do lists and the journal.
+     * - `list_items.list_key` is "day:2026-11-24", "month:2026-11" or "inbox". Items are plain rows, not memories:
+     *   ticking one must not touch search or embeddings.
+     * - A journal entry is a normal memory (searchable), linked to the day it was said in `journal_entries`;
+     *   `journal_days.summary` is that day's short summary, rebuilt when `changed_at > summarized_at`.
+     */
+    val v2: List<String> = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS list_items (
+            id          INTEGER PRIMARY KEY,
+            uuid        TEXT NOT NULL UNIQUE,
+            list_key    TEXT NOT NULL,
+            body        TEXT NOT NULL,
+            position    INTEGER NOT NULL,
+            cost        REAL,
+            minutes     INTEGER,
+            done_at     INTEGER,
+            created_at  INTEGER NOT NULL,
+            deleted_at  INTEGER
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS list_items_by_key ON list_items(list_key, position) WHERE deleted_at IS NULL",
+        """
+        CREATE TABLE IF NOT EXISTS journal_entries (
+            memory_id   INTEGER PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+            day         TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS journal_entries_by_day ON journal_entries(day)",
+        """
+        CREATE TABLE IF NOT EXISTS journal_days (
+            day            TEXT PRIMARY KEY,
+            summary        TEXT,
+            summary_by_ai  INTEGER NOT NULL DEFAULT 0,
+            summarized_at  INTEGER,
+            changed_at     INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """,
+    ).map { it.trimIndent().trim() }
+
+    /** v3: how many entries a journal day's summary was made from, so a deleted entry rebuilds it. */
+    val v3: List<String> = listOf(
+        "ALTER TABLE journal_days ADD COLUMN entry_count INTEGER NOT NULL DEFAULT 0",
+        // Existing days get their live count, so their summaries (the AI's too) are kept.
+        """
+        UPDATE journal_days SET entry_count = (SELECT count(*) FROM journal_entries j JOIN memories m ON m.id = j.memory_id
+                                               WHERE j.day = journal_days.day AND m.deleted_at IS NULL)
+        """.trimIndent(),
+    )
 }

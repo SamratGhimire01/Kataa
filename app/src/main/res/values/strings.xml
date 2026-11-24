@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Kataa</string>
+    <string name="widget_talk">Talk to Kataa</string>
+    <string name="widget_description">Tap to save or find something by voice</string>
+    <string name="shortcut_talk">Talk</string>
+    <string name="tile_label">Kataa</string>
+    <string name="share_label">Save to Kataa</string>
+</resources>

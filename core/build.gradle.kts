@@ -16,6 +16,7 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.kotlinx.serialization.json)
             api(libs.kotlinx.datetime)
+            api(libs.kotlinx.coroutines.core)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
@@ -42,7 +43,15 @@ tasks.withType<Test>().configureEach {
             .orElse(rootProject.layout.projectDirectory.file("build/native/vec0").asFile.absolutePath)
             .get(),
     )
+    val nativeDir = rootProject.layout.projectDirectory.dir("native/build/host").asFile
+    systemProperty("kataa.nativeLib", listOf("libkataa_sqlite.so", "libkataa_sqlite.dylib").map { nativeDir.resolve(it) }.firstOrNull { it.exists() }?.absolutePath ?: "")
+    providers.gradleProperty("kataa.driver").orNull?.let { systemProperty("kataa.driver", it) }
     systemProperty("kataa.modelDir", rootProject.layout.projectDirectory.dir("models/bge-small-en-v1.5").asFile.absolutePath)
+    // On-device language model ("mind"): host build of native/llm and the GGUF (scripts/fetch-llm-model.sh).
+    val llmDir = rootProject.layout.projectDirectory.dir("native/build/host-llm").asFile
+    systemProperty("kataa.llmLib", listOf("libkataa_llm.so", "libkataa_llm.dylib").map { llmDir.resolve(it) }.firstOrNull { it.exists() }?.absolutePath ?: "")
+    systemProperty("kataa.llmModel", listOf("mind/jni/arm64-v8a/libkataa_mind.so", "models-cache/kataa-mind-qwen2.5-1.5b.gguf")
+        .map { rootProject.layout.projectDirectory.file(it).asFile }.firstOrNull { it.exists() }?.absolutePath ?: "")
     maxHeapSize = "1g"
     testLogging { events("failed"); showStandardStreams = true; exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }

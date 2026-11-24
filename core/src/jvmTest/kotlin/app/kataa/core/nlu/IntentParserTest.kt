@@ -47,7 +47,8 @@ class IntentParserTest {
     @Test fun notesKeepUserWordsAndCase() {
         val u = parse("Remember that Ramesh's wifi password is Sunflower99")
         assertIs<Understanding.Save>(u)
-        assertEquals(MemoryKind.NOTE, u.kind)
+        // A password is a fact with one current value (a newer one replaces it), still in the user's own words.
+        assertEquals(MemoryKind.FACT, u.kind)
         assertEquals("Ramesh's wifi password is Sunflower99", u.body)
 
         val idea = parse("idea: an app that tells you where you parked")
@@ -71,9 +72,18 @@ class IntentParserTest {
         }
     }
 
-    @Test fun tooShortIsUnclear() {
-        assertIs<Understanding.Unclear>(parse("keys"))
+    @Test fun shortPhrasesAreLookups() {
+        // A bare thing is someone looking it up ("keys", "facebook password"); the app offers "Save it instead".
+        assertIs<Understanding.Ask>(parse("keys"))
+        assertIs<Understanding.Ask>(parse("facebook password"))
+        assertIs<Understanding.Ask>(parse("give me the facebook passport"))
         assertIs<Understanding.Unclear>(parse("   "))
+        // Tasks become reminders; statements stay notes.
+        assertIs<Understanding.Remind>(parse("call mom"))
+        assertIs<Understanding.Remind>(parse("buy milk"))
+        assertIs<Understanding.Save>(parse("mom likes red roses"))
+        assertIs<Understanding.Save>(parse("dad likes tea"))
+        assertIs<Understanding.Save>(parse("my wifi password is sunflower123")).let { assertEquals("wifi password", it.subject); assertTrue(it.replacesOld) }
     }
 
     // ---------- Questions ----------

@@ -69,6 +69,13 @@ class MemoryRepository(
             after?.id, after?.createdAt, after?.id, limit, map = ::mapMemory,
         )
 
+    /** Newest first, made before [beforeMs]: the timeline from a chosen date back. */
+    fun before(beforeMs: Long, limit: Int = 200): List<Memory> =
+        db.query(
+            "SELECT $COLUMNS FROM memories WHERE deleted_at IS NULL AND created_at < ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            beforeMs, limit, map = ::mapMemory,
+        )
+
     fun update(id: Long, edit: MemoryEdit): Memory = db.transaction {
         val current = get(id) ?: throw NoSuchElementException("memory $id")
         val newSubject = when {
@@ -133,6 +140,30 @@ class MemoryRepository(
         }
         return out
     }
+
+    /**
+     * The private ones among [ids]: in a private category, or a secret by its own words ([Secrets]), so a
+     * password is hidden from the moment it is saved.
+     */
+    fun privateIds(ids: Collection<Long>): Set<Long> {
+        if (ids.isEmpty()) return emptySet()
+        val out = HashSet<Long>()
+        ids.distinct().chunked(500).forEach { chunk ->
+            val ph = chunk.joinToString(",") { "?" }
+            db.query(
+                """
+                SELECT DISTINCT a.memory_id FROM memory_categories_active a
+                JOIN categories c ON c.id = a.category_id
+                WHERE c.is_private = 1 AND a.memory_id IN ($ph)
+                """.trimIndent(),
+                *chunk.toTypedArray(),
+            ) { it.long(0) }.forEach(out::add)
+        }
+        getMany(ids.filter { it !in out }).values.filter(Secrets::looksSecret).forEach { out += it.id }
+        return out
+    }
+
+    fun isPrivate(m: Memory): Boolean = m.id in privateIds(listOf(m.id))
 
     fun countLive(): Long = db.queryOne("SELECT count(*) FROM memories WHERE deleted_at IS NULL") { it.long(0) } ?: 0
 

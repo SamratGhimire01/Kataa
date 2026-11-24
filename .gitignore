@@ -10,3 +10,13 @@ captures/
 *.db-wal
 *.db-shm
 models/
+native/third_party/
+native/build/
+app/.cxx/
+keystore.properties
+*.jks
+native/llm/llama.cpp/
+/models-cache/
+/mind/
+/ear/
+native/whisper/whisper.cpp/

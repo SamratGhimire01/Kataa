@@ -22,10 +22,29 @@ class AssistantTest {
     private val bigMartBranch = GeoPoint(27.6915, 85.3420)
     private val home = GeoPoint(27.7000, 85.3000)
 
-    private fun say(s: String, at: GeoPoint? = null, unlocked: Boolean = false) =
-        core.assistant.handle(s, AssistantContext(clock.now, tz, at, unlocked))
+    /** Says [s]; a spoken password is shown back for a yes, which these tests always give. */
+    private fun say(s: String, at: GeoPoint? = null, unlocked: Boolean = false): Reply {
+        val ctx = AssistantContext(clock.now, tz, at, unlocked)
+        val r = core.assistant.handle(s, ctx)
+        return when (r) {
+            is Reply.ConfirmSecret -> core.assistant.followUp(r, "yes", ctx)
+            // "at 5" without am/pm asks; these tests take Kataa's own first guess.
+            is Reply.PickTime -> core.assistant.followUp(r, "the first one", ctx)
+            else -> r
+        }
+    }
 
     private fun minutes(n: Int) { clock.now += n * 60_000L }
+
+    @Test fun smallTalkIsNotSavedOrSearched() {
+        say("My keys are in the blue drawer")
+        for (s in listOf("ok thanks", "Thank you!", "hello", "okay", "ok ok")) {
+            val r = say(s)
+            assertTrue(r is Reply.SmallTalk, "$s -> $r")
+        }
+        assertEquals("You're welcome.", ReplyText.of(say("thanks")))
+        assertEquals(1, core.memories.recent(50).size)
+    }
 
     @Test fun whereAreMyKeys() {
         assertIs<Reply.Saved>(say("My keys are in the blue drawer"))
@@ -170,9 +189,8 @@ class AssistantTest {
     @Test fun privateStaysLockedByVoice() {
         say("my bank PIN is 4321")
         core.processPending()
-        val locked = say("show me my private stuff")
-        assertIs<Reply.CategoryList>(locked)
-        assertTrue(locked.memories.isEmpty())
+        // Locked: asks for fingerprint/PIN first, never lists them.
+        assertIs<Reply.NeedsUnlock>(say("show me my private stuff"))
         assertTrue((say("show me my private stuff", unlocked = true) as Reply.CategoryList).memories.isNotEmpty())
     }
 
@@ -183,5 +201,50 @@ class AssistantTest {
         val perCallMs = (System.nanoTime() - t0) / 1e6 / 200
         println("BENCH assistant where-question: ${"%.2f".format(perCallMs)} ms/call")
         assertTrue(perCallMs < 20, "too slow: $perCallMs ms")
+    }
+
+    // ---- Real problems from the first phone test (24 Nov 2026)
+
+    @Test fun sameThingIsNotSavedTwice() {
+        val first = say("Call mom")
+        assertIs<Reply.NeedsTime>(first)
+        minutes(9)
+        val again = say("call my mom")
+        assertTrue(again is Reply.NeedsTime || again is Reply.AlreadySaved, "got $again")
+        assertEquals(1, core.memories.recent().count { it.body.lowercase().contains("mom") })
+
+        assertIs<Reply.Saved>(say("One idea how to make Facebook better"))
+        assertIs<Reply.AlreadySaved>(say("one idea how to make facebook better"))
+    }
+
+    @Test fun newPasswordReplacesOld() {
+        assertIs<Reply.Saved>(say("My Facebook password is Samrat 001"))
+        minutes(1)
+        assertIs<Reply.AlreadySaved>(say("my facebook password is samrat 001"))
+        val r = say("My Facebook password is Samrat 002")
+        assertIs<Reply.Replaced>(r)
+        val live = core.memories.recent().filter { it.body.lowercase().contains("password") }
+        assertEquals(listOf("My Facebook password is Samrat 002"), live.map { it.body })
+    }
+
+    @Test fun lookupsAreNotSaved() {
+        say("My Facebook password is Samrat 001")
+        core.processPending()
+        for (q in listOf("Facebook password", "Give me the Facebook password", "My Facebook password is what", "my facebook password is what is")) {
+            val r = say(q, unlocked = true)
+            assertTrue(r is Reply.Answer || r is Reply.NeedsUnlock, "$q -> $r")
+        }
+        assertEquals(1, core.memories.recent().size)
+    }
+
+    @Test fun taskAsksWhenAndAcceptsNo() {
+        val r = say("Buy milk")
+        assertIs<Reply.NeedsTime>(r)
+        val k = core.assistant.followUp(r, "at 6 pm", AssistantContext(clock.now, tz))
+        assertIs<Reply.ReminderSet>(k)
+        val r2 = say("Pay electricity bill")
+        assertIs<Reply.NeedsTime>(r2)
+        assertIs<Reply.Saved>(core.assistant.followUp(r2, "no", AssistantContext(clock.now, tz)))
+        assertTrue(core.memories.recent().any { it.body == "Pay electricity bill" })
     }
 }

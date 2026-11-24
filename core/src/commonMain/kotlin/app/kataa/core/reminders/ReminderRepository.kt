@@ -75,10 +75,10 @@ class ReminderRepository(private val db: SqlDriver, private val clock: TimeSourc
         """
         SELECT ${prefixed()} FROM reminders r JOIN memories m ON m.id = r.memory_id AND m.deleted_at IS NULL
         WHERE r.status = 'SCHEDULED' AND r.type = ?
-          AND (r.place_id = ? OR (r.place_brand IS NOT NULL AND r.place_brand = ?) OR (r.place_type IS NOT NULL AND r.place_type = ?))
+          AND (r.place_id = ? OR (r.place_brand IS NOT NULL AND ${PlaceRepository.brandMatches("r.place_brand", "?", "?")}) OR (r.place_type IS NOT NULL AND r.place_type = ?))
         ORDER BY r.created_at
         """.trimIndent(),
-        if (exit) "PLACE_EXIT" else "PLACE_ENTER", place.id, place.brand, place.placeType,
+        if (exit) "PLACE_EXIT" else "PLACE_ENTER", place.id, place.brand, place.brand, place.placeType, place.placeType,
         map = ::mapReminder,
     )
 

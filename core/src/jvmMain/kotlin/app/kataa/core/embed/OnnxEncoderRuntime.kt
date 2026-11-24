@@ -4,6 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.File
+import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 
@@ -11,20 +12,29 @@ import java.nio.LongBuffer
  * ONNX Runtime encoder. The same `ai.onnxruntime` Java API ships in `onnxruntime-android`, so the
  * Android app reuses this class unchanged.
  */
-class OnnxEncoderRuntime(modelBytes: ByteArray, threads: Int = 2) : EncoderRuntime {
-    private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = env.createSession(
-        modelBytes,
-        OrtSession.SessionOptions().apply {
+class OnnxEncoderRuntime private constructor(private val env: OrtEnvironment, private val session: OrtSession) : EncoderRuntime {
+    private val needsTokenTypes = "token_type_ids" in session.inputNames
+
+    /** Loads from a file path, so the model is never copied onto the Java heap (matters on 2 GB phones). */
+    constructor(modelFile: File, threads: Int = 2) : this(OrtEnvironment.getEnvironment(), threads, modelFile)
+
+    /** Loads from a direct (e.g. memory-mapped) buffer: Android maps the model straight out of the APK. */
+    constructor(model: ByteBuffer, threads: Int = 2) : this(OrtEnvironment.getEnvironment(), threads, model)
+
+    private constructor(env: OrtEnvironment, threads: Int, modelFile: File) :
+        this(env, env.createSession(modelFile.absolutePath, options(threads)))
+
+    private constructor(env: OrtEnvironment, threads: Int, model: ByteBuffer) :
+        this(env, env.createSession(model, options(threads)))
+
+    private companion object {
+        fun options(threads: Int) = OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(threads)
             setInterOpNumThreads(1)
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             setMemoryPatternOptimization(true)
-        },
-    )
-    private val needsTokenTypes = "token_type_ids" in session.inputNames
-
-    constructor(modelFile: File, threads: Int = 2) : this(modelFile.readBytes(), threads)
+        }
+    }
 
     override fun run(inputIds: LongArray, attentionMask: LongArray, batch: Int, seqLen: Int): FloatArray {
         val shape = longArrayOf(batch.toLong(), seqLen.toLong())
@@ -48,9 +58,15 @@ class OnnxEncoderRuntime(modelBytes: ByteArray, threads: Int = 2) : EncoderRunti
 
 object Models {
     /** bge-small-en-v1.5, int8-quantized ONNX (34 MB). See scripts/fetch-model.sh. */
-    fun bgeSmall(dir: File, threads: Int = 2): BertEmbedder = BertEmbedder(
-        tokenizer = WordPieceTokenizer.fromVocabText(File(dir, "vocab.txt").readText()),
-        runtime = OnnxEncoderRuntime(File(dir, "model_quantized.onnx"), threads),
+    fun bgeSmall(dir: File, threads: Int = 2): BertEmbedder =
+        bgeSmall(OnnxEncoderRuntime(File(dir, "model_quantized.onnx"), threads), File(dir, "vocab.txt").readText())
+
+    fun bgeSmall(model: ByteBuffer, vocabText: String, threads: Int = 2): BertEmbedder =
+        bgeSmall(OnnxEncoderRuntime(model, threads), vocabText)
+
+    private fun bgeSmall(runtime: EncoderRuntime, vocabText: String): BertEmbedder = BertEmbedder(
+        tokenizer = WordPieceTokenizer.fromVocabText(vocabText),
+        runtime = runtime,
         modelId = "bge-small-en-v1.5@int8",
         dimension = 384,
         pooling = Pooling.CLS,

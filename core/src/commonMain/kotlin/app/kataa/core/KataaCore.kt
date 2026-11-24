@@ -49,7 +49,10 @@ class KataaCore(
     val reminders = ReminderRepository(db, clock)
     val geofences = GeofencePlanner(db, clock)
     val backup = BackupService(db, clock)
+    val lists = app.kataa.core.lists.TaskLists(db, clock, ids)
+    val journal = app.kataa.core.journal.Journal(db, memories, clock)
     val assistant = app.kataa.core.assistant.Assistant(this)
+    val triggers = app.kataa.core.triggers.TriggerEngine(this)
 
     init {
         categories.onUserConfirmed = { memoryId, categoryId -> classifier.learn(memoryId, categoryId) }
@@ -60,6 +63,7 @@ class KataaCore(
         val embedded = embeddings.indexPending()
         val classified = classifier.classifyPending()
         val purged = memories.purgeTrash(trashRetentionMs)
+        runCatching { journal.refreshChangedDays() }
         return ProcessReport(embedded, classified, purged)
     }
 
