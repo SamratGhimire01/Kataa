@@ -42,18 +42,20 @@ class LlamaModel private constructor(@Volatile private var handle: Long) : Langu
     }
 
     companion object {
+        // Handles are native pointers. On Android arm64 they carry a tag in the top byte (0xb4...), so they are
+        // negative as a Long: only 0 means failure.
         /**
          * [fast] repacks weights for the CPU's fastest kernels (about 2x quicker, but the weights then live in
          * RAM instead of being paged from the file): use it only on phones with plenty of memory.
          */
         fun open(path: String, threads: Int, nCtx: Int = 2048, fast: Boolean = true): LlamaModel? =
-            LlamaNative.loadPath(path.encodeToByteArray(), threads, nCtx, fast).takeIf { it > 0 }?.let(::LlamaModel)
+            LlamaNative.loadPath(path.encodeToByteArray(), threads, nCtx, fast).takeIf { it != 0L }?.let(::LlamaModel)
 
         /** Returns null if loading failed, and throws [MisalignedException] if the caller should copy the file out first. */
         fun openFd(fd: Int, offset: Long, threads: Int, nCtx: Int = 2048, fast: Boolean = true): LlamaModel? {
             val h = LlamaNative.loadFd(fd, offset, threads, nCtx, fast)
             if (h == -1L) throw MisalignedException()
-            return h.takeIf { it > 0 }?.let(::LlamaModel)
+            return h.takeIf { it != 0L }?.let(::LlamaModel)
         }
     }
 
