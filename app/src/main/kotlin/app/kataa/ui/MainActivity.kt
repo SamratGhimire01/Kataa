@@ -574,7 +574,8 @@ class MainActivity : ComponentActivity() {
                     .setMessage("Pin it on the map, or if you are there now, save this spot.")
                     .setPositiveButton("Pin on map") { _, _ -> openDialog = null; pinPlace.launch(MapActivity.intent(this, r.placeName, heard)) }
                     .setNeutralButton("I'm there now") { _, _ -> openDialog = null; session.type("save this place as ${r.placeName}") }
-                    .setNegativeButton("Later") { _, _ -> openDialog = null }
+                    .setNegativeButton("Later") { _, _ -> openDialog = null; session.forget() }
+                    .setOnCancelListener { openDialog = null; session.forget() }
                     .show()
             }
             is Reply.NeedsTime -> {
@@ -656,6 +657,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showMessage(text: String, keepOpen: Boolean = false, typeLink: Boolean = false) {
+        main.removeCallbacks(autoClose)
         if (scene != Scene.TALK) { resetTalk(); go(Scene.TALK) }
         nebula.setState(NebulaView.State.IDLE)
         shine.hide()
@@ -689,7 +691,7 @@ class MainActivity : ComponentActivity() {
     private fun showDidI(heard: String, r: Reply.DidIAnswer) {
         prepareAnswer(heard)
         bigText.text = if (r.done) "Yes, you did" else "No record of that"
-        metaText.text = r.memory?.let { "${it.body}, ${relative(it.createdAt)}" } ?: "Say \"I took my medicine\" next time and I'll remember"
+        metaText.text = r.memory?.let { "${shown(it)}, ${relative(it.createdAt)}" } ?: "Say \"I took my medicine\" next time and I'll remember"
         setObject(null, r.memory?.let { ObjectIcons.forText(it.body) } ?: ObjectIcons.notFound)
     }
 
@@ -806,6 +808,7 @@ class MainActivity : ComponentActivity() {
     // ---------------------------------------------------------------- lists
 
     private fun startList(next: Scene, title: String, count: String? = null, back: (() -> Unit)? = null) {
+        main.removeCallbacks(autoClose) // an earlier answer's timer must not close this screen
         list.removeAllViews()
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         if (back != null) head.addView(ui.icon(R.drawable.ic_back, 26f, look.fg).apply {
@@ -1268,7 +1271,8 @@ class MainActivity : ComponentActivity() {
         showMessage(ReplyText.of(r), keepOpen = true)
         openDialog = dialog().setTitle("${r.memory.body}: when?")
             .setItems(r.options.map { it.label.replaceFirstChar { c -> c.uppercase() } }.toTypedArray()) { _, i -> openDialog = null; session.pickTime(r.options[i]) }
-            .setNegativeButton("Later") { _, _ -> openDialog = null }
+            .setNegativeButton("Later") { _, _ -> openDialog = null; session.forget() }
+                    .setOnCancelListener { openDialog = null; session.forget() }
             .show()
     }
 
@@ -1295,6 +1299,7 @@ class MainActivity : ComponentActivity() {
                 }, now.get(Calendar.YEAR), now.get(Calendar.MONTH), now.get(Calendar.DAY_OF_MONTH))
             wheel.setTitle(r.askFor!!.replaceFirstChar { it.uppercase() })
             wheel.setButton(android.content.DialogInterface.BUTTON_NEUTRAL, "Say it") { _, _ -> openDialog = null; startTalking() }
+            wheel.setOnCancelListener { openDialog = null; session.forget() } // closed: the next sentence is new
             openDialog = wheel
             wheel.show()
         }, 900)

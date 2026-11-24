@@ -481,11 +481,39 @@ class ListsAndJournalTest {
         val gym = core.places.save("Gym", 27.7, 85.3, radiusM = 100.0)
         assertEquals(app.kataa.core.model.PlaceTarget.Specific(gym.id), set(say("remind me to pay the fees when i reach the gym")).placeTarget)
         assertIs<Reply.NeedsPlace>(say("remind me to give the gift when i reach sita's house"))
+        // A brand with an apostrophe is still a brand; a pinned name beats a brand of the same name.
+        assertEquals(app.kataa.core.model.PlaceTarget.Brand("mcdonalds"), set(say("remind me to buy a burger when i reach mcdonald's")).placeTarget)
+        val mart = core.places.save("Big Mart", 27.71, 85.31, radiusM = 100.0)
+        assertEquals(app.kataa.core.model.PlaceTarget.Specific(mart.id), set(say("remind me to buy soap when i reach big mart")).placeTarget)
+        // The "bro" filler.
+        assertEquals("Call ram", core.memories.get(set(say("bro remind me to call ram at 9 pm")).memoryId)!!.body.trimEnd('.'))
         // QA 5: the timeline from a date back.
         clock.advanceDays(2.0)
         val later = core.memories.save(app.kataa.core.model.NewMemory("The car was serviced"))
         val before = core.memories.before(later.createdAt)
         assertTrue(before.isNotEmpty() && before.none { it.id == later.id } && before.all { it.createdAt < later.createdAt })
+    }
+
+    /** Ninth bug-hunt pass. Said on Tuesday 24 Nov 2026 at 08:00. */
+    @Test fun reviewFindingsPass9() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun answer(q: String, a: String) = core.assistant.followUp(assertIs<Reply.PickTime>(say(q), q), a, ctx())
+        // 2-4: answers that are only a time.
+        val a1 = set(answer("remind me to call didi at 7:13", "remind me at 7 pm"))
+        assertEquals("2026-11-24T19:13", local(a1.fireAt!!)); assertEquals("Call didi", core.memories.get(a1.memoryId)!!.body.trimEnd('.'))
+        assertEquals("2026-11-24T19:13", local(set(answer("remind me to call hari at 7:13", "make it today at 7 13 in the evening please")).fireAt!!))
+        assertEquals("2026-11-24T19:13", local(set(answer("remind me to call sita at 7:13", "7 tonight")).fireAt!!))
+        // 5, 6: birthday answers.
+        val nf = assertIs<Reply.NotFound>(say("what's my mom's birthday"))
+        val b = assertIs<Reply.ReminderSet>(core.assistant.followUp(nf, "my mom's birthday is on march 12", ctx()))
+        assertEquals("FREQ=YEARLY", b.reminders.single().rrule); assertEquals("My mom's birthday is march 12", b.memory.body.trimEnd('.'))
+        val nf2 = assertIs<Reply.NotFound>(say("when is my dad's birthday"))
+        val d = core.assistant.followUp(nf2, "march twenty first", ctx())
+        assertTrue(d is Reply.Saved || d is Reply.ReminderSet, "$d")
+        // 7: question words inside a reminder do not split it.
+        val doc = set(say("remind me tomorrow at 9 am to ask the doctor about my medicine and when to take it"))
+        assertTrue(core.memories.get(doc.memoryId)!!.body.contains("when to take it"))
     }
 
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */

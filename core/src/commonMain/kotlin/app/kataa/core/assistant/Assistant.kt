@@ -527,7 +527,10 @@ class Assistant(private val core: KataaCore) {
      */
     private fun rememberAnswer(nf: Reply.NotFound, raw: String, ctx: AssistantContext): Reply {
         val thing = nf.askFor!!.removePrefix("your ")
-        val answer = raw.trim().trimEnd('.', '!').replace(Regex("(?i)^(?:it is|it's|its|on|that is|they are)\\s+"), "")
+        // "my mom's birthday is on march 12", "her birthday is 12 march": the date, not the whole sentence again.
+        val answer = raw.trim().trimEnd('.', '!')
+            .replace(Regex("(?i)^(?:my|her|his|their|our|its|the)\\b[^,]*?\\b(?:is|are|was)\\s+(?:on\\s+)?"), "")
+            .replace(Regex("(?i)^(?:it is|it's|its|on|that is|they are)\\s+"), "")
         val body = "My ${thing} is $answer"
         val subject = Text.subjectKey(thing)
         val saved = save(raw, Understanding.Save(Text.sentence(body), MemoryKind.FACT, subject, null, replacesOld = true), ctx)
@@ -582,6 +585,15 @@ class Assistant(private val core: KataaCore) {
                 ?.let { Instant.fromEpochMilliseconds(it).toLocalDateTime(tz) } ?: kotlinx.datetime.LocalDateTime(at.date.plus(1, DateTimeUnit.DAY), at.time)
         }
         return schedule(p.memory, app.kataa.core.nlu.TimeMatch(at.toInstant(tz), p.rrule ?: parsed.rrule, 0..0, timeWasDefaulted = false), null, p.persistent, ctx)
+    }
+
+    /** Words left after the time is taken out, other than "remind me", "make it", "the first one" and the like. */
+    private fun saysMoreThanATime(text: String, ctx: AssistantContext): Boolean {
+        var s = text
+        TimeParser.parse(text, ctx.nowMs, ctx.timeZone)?.let { t ->
+            (t.parts.ifEmpty { listOf(t.range) }).sortedByDescending { it.first }.forEach { r -> if (r.last < s.length) s = s.removeRange(r) }
+        }
+        return s.split(Regex("[^a-z']+")).filter { it.isNotEmpty() && it !in ANSWER_WORDS && it.none(Char::isDigit) }.isNotEmpty()
     }
 
     /** "Save it" after a [Reply.NeedsClarification] or [Reply.NotFound]. */
@@ -676,16 +688,20 @@ class Assistant(private val core: KataaCore) {
                 u is Understanding.Remind && REMIND_WORD.containsMatchIn(text) || u is Understanding.Agenda ||
                 u == Understanding.StartIdea || u == Understanding.Undo || text.split(' ').size > 12) return handle(raw, ctx)
             // "I put my keys in the drawer" after "When is it?": something new, not the answer.
-            val noDate = previous.isWhen && TimeParser.parse("on $text", ctx.nowMs, ctx.timeZone) == null && !Regex("\\d").containsMatchIn(text)
-            val ownStatement = Regex("^(?:i|we|my|our|the|remind|please)\\b").containsMatchIn(text) && text.split(' ').size >= 4 &&
-                (u is Understanding.Save && u.kind != MemoryKind.NOTE || u is Understanding.Remind)
+            val dateWords = Regex("\\d|\\b(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|twentieth|twenty|thirtieth|thirty|teenth|today|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)")
+            val noDate = previous.isWhen && !dateWords.containsMatchIn(text) && TimeParser.parse("on $text", ctx.nowMs, ctx.timeZone) == null
+            // "I put my keys in the drawer" after "What is it?": a new statement, unless it is about the asked thing.
+            val asked = previous.askFor.removePrefix("your ").split(' ').filter { it.length > 2 }
+            val ownStatement = !previous.isWhen && Regex("^(?:i|we|my|our|the|remind|please)\\b").containsMatchIn(text) && text.split(' ').size >= 4 &&
+                (u is Understanding.Save && u.kind != MemoryKind.NOTE || u is Understanding.Remind) && asked.none { it in text }
             if ((noDate && text.split(' ').size >= 3) || ownStatement) return handle(raw, ctx)
             return rememberAnswer(previous, raw, ctx)
         }
         if (previous is Reply.PickTime) {
             val text = Text.normalize(raw)
-            // "remind me to buy milk at 5 pm" instead of an answer: a new request, the asked one stays as it is.
-            if (REMIND_WORD.containsMatchIn(text) || text.split(' ').size > 7) return handle(raw, ctx)
+            // "remind me to buy milk at 5 pm", "my meeting is at 3 pm": a new request, the asked one stays as it is.
+            // "remind me at 7 pm", "make it today at 7 13 in the evening please": only a time, so an answer.
+            if (saysMoreThanATime(text, ctx)) return handle(raw, ctx)
             pickAnswer(previous, text, ctx)?.let { return it }
             val pick = when {
                 PICK_FIRST.matches(text) -> previous.options.first()
@@ -1003,8 +1019,12 @@ class Assistant(private val core: KataaCore) {
         private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
         private val MORNING_HINT = Regex("\\b(?:wake|wake up|breakfast|morning|sunrise|before work|before office|before college)\\b")
         private val EVENING_HINT = Regex("\\b(?:dinner|supper|tonight|evening|night|after work|after office|after college|sunset)\\b")
-        private val PERSONAL_PLACE = Regex("'s?\\b|s' |^(?:my|our) |\\b(?:house|home|room|flat|apartment|hostel|village|quarters|ghar|dera|farm|garden|plot)$")
-        private val NAMES_DAY = Regex("\\b(?:today|tomorrow|tonight|day after|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next|on the|after \\d+|in \\d+ (?:days?|weeks?)|january|february|march|april|may|june|july|august|september|october|november|december)\\b")
+        private val PERSONAL_PLACE = Regex("^(?:my|our) |\\b(?:house|home|room|flat|apartment|hostel|village|quarters|ghar|dera|farm|garden|plot)$")
+        private val ANSWER_WORDS = setOf("remind", "me", "it", "make", "set", "change", "to", "please", "at", "the", "for", "then",
+            "instead", "ok", "okay", "yes", "no", "actually", "do", "put", "one", "first", "second", "am", "pm", "a", "p", "m",
+            "morning", "evening", "night", "tonight", "today", "tomorrow", "afternoon", "in", "on", "of", "and", "that", "is",
+            "o'clock", "oclock", "clock", "just", "sorry", "i", "meant", "mean", "said", "say", "make", "time", "around", "about", "by")
+        private val NAMES_DAY = Regex("\\b(?:tomorrow|day after|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next|on the|after \\d+|in \\d+ (?:days?|weeks?)|january|february|march|april|may|june|july|august|september|october|november|december)\\b")
         private val AM_WORD = Regex("\\b(?:am|a m|morning|in the morning|tomorrow morning|early)\\b")
         private val PM_WORD = Regex("\\b(?:pm|p m|evening|night|tonight|afternoon|in the evening)\\b")
         private val PICK_FIRST = Regex("^(?:the )?(?:first|1st)(?: (?:one|1))?$|^(?:yes|yeah|ok|okay|that one|right|correct)$")
@@ -1021,7 +1041,7 @@ class Assistant(private val core: KataaCore) {
         /** Second hit within 8% of the first: let the mind choose between them. */
         private const val NEAR_TIE = 0.92
         /** Where a second request starts. The lookahead keeps "my"/"the"/"i" with the second part. */
-        private val SPLIT = Regex("\\s(?:and also|and then|and|also|plus)\\s(?=(?:my|the|our|i|remind|also|what|where|when|which|who|how|did)\\b)")
+        private val SPLIT = Regex("\\s(?:and also|and then|and|also|plus)\\s(?=(?:my|the|our|i|remind|also)\\b|(?:what|where|when|which|who|how) (?:is|are|was|were|do|did|does)\\b|did i\\b)")
         private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
         private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
         private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")
