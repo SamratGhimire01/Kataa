@@ -112,6 +112,33 @@ class KataaSession(
         }
     }
 
+    /**
+     * The Save button on the password card, with the value or service as the user fixed them (null = as heard).
+     * Does nothing unless Kataa is waiting for that yes.
+     */
+    fun confirmSecret(value: String? = null, service: String? = null) {
+        val pending = awaiting as? Reply.ConfirmSecret ?: return
+        _state.value = KataaState.Thinking(pending.service)
+        runOnCore {
+            try {
+                val c = core()
+                awaiting = null
+                val r = c.assistant.confirmSecret(pending, context(), value ?: pending.value, service ?: pending.service)
+                _state.value = KataaState.Done(pending.service, r)
+                runCatching { c.processPending() }
+            } catch (t: Throwable) {
+                _state.value = KataaState.Failed(SpeechError.OTHER)
+            }
+        }
+    }
+
+    /** "Don't save" on the password card. */
+    fun cancelSecret() {
+        if (awaiting !is Reply.ConfirmSecret) return
+        awaiting = null
+        _state.value = KataaState.Done("", Reply.NotSaved)
+    }
+
     /** Back to the resting orb (after the result card is dismissed). */
     fun dismiss() {
         if (_state.value is KataaState.Done || _state.value is KataaState.Failed) _state.value = KataaState.Idle
@@ -139,7 +166,7 @@ class KataaSession(
                 // "this is Big Mart" with no recent fix: get one now and try again.
                 freshLocation?.invoke()?.let { loc -> reply = c.assistant.handle(text, ctx.copy(location = loc)) }
             }
-            awaiting = reply.takeIf { it is Reply.NeedsTime || it is Reply.NeedsPlace || it is Reply.NeedsLocation }
+            awaiting = reply.takeIf { it is Reply.NeedsTime || it is Reply.NeedsPlace || it is Reply.NeedsLocation || it is Reply.ConfirmSecret }
             _state.value = KataaState.Done(text, reply)
             // Embedding and categories happen after the answer is on screen; a failure there must not
             // turn a saved memory into an error.

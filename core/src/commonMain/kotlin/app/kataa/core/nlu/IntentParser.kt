@@ -5,6 +5,9 @@ import kotlinx.datetime.TimeZone
 
 enum class QuestionType { WHERE, DID_I, WHEN, GENERAL }
 
+/** A password said by the user: which app or service it is for, and the value exactly as heard. */
+data class Secret(val service: String, val value: String)
+
 /** What the user meant, before anything is stored. */
 sealed interface Understanding {
     data class Save(
@@ -14,6 +17,8 @@ sealed interface Understanding {
         val objectLocation: ObjectLocationMatch?,
         /** A fact with one current value ("my wifi password is ..."): saving it replaces the older one. */
         val replacesOld: Boolean = false,
+        /** A password or PIN: Kataa shows it back for a yes before saving (voice often mishears them). */
+        val secret: Secret? = null,
     ) : Understanding
     data class Remind(
         val body: String,
@@ -231,7 +236,8 @@ object IntentParser {
         // Said as a plain statement ("my wifi password is x"): keep the user's own words. Otherwise write it clearly.
         val statement = Regex("\\b(?:password|passcode|pin|pin code) (?:is|=) ").containsMatchIn(text) && !text.startsWith("change") && !Regex("\\bnew\\b").containsMatchIn(text)
         val body = if (statement) saveBody(raw) else "$shownService password is ${originalCase(v, raw)}"
-        return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey("$svc password"), null, replacesOld = true)
+        return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey("$svc password"), null, replacesOld = true,
+            secret = Secret(shownService, originalCase(v, raw)))
     }
 
     /** [lower] as the user typed it (passwords are case-sensitive), when it can be found in [raw]. */
@@ -257,7 +263,7 @@ object IntentParser {
         }
         s = s.replace(Regex("\\s+"), " ").trim().replace(REMINDER_LEAD, "").replace(REMINDER_TAIL, "")
         s = s.replace(Regex("\\s+"), " ").trim().trimEnd(',', ' ')
-        s = s.replace(Regex("\\s+(?:and|to|at|in|on|when|by|please|that|then)$"), "").trim()
+        s = s.replace(Regex("(?:\\s+(?:and|to|at|in|on|when|by|please|that|then|the|a|on the|by the))+$"), "").trim()
         if (s.isEmpty()) s = text
         return Text.sentence(restoreCase(s, raw))
     }

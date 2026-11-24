@@ -2,6 +2,19 @@ package app.kataa.core.assistant
 
 /** The short sentence Kataa shows and speaks for each reply. One place, so screen and voice agree. */
 object ReplyText {
+    /**
+     * What Kataa says out loud. Same as [of], except it never speaks a password or PIN (someone may be nearby):
+     * the screen shows it, the voice only says what it is.
+     */
+    fun spoken(r: Reply): String = when {
+        r is Reply.ConfirmSecret -> "Is this ${r.service} password right? It's on the screen. Say yes, or tell me the right one."
+        r is Reply.Answer && app.kataa.core.memory.Secrets.looksSecret(r.memory) ->
+            "Here's your ${app.kataa.core.memory.Secrets.service(r.memory.body) ?: "password"}. It's on the screen."
+        r is Reply.Replaced && app.kataa.core.memory.Secrets.looksSecret(r.memory) -> "Updated. I replaced the old one."
+        r is Reply.Several -> r.replies.joinToString(" ") { spoken(it) }
+        else -> of(r)
+    }
+
     fun of(r: Reply): String = when (r) {
         is Reply.Saved -> "Got it."
         is Reply.AlreadySaved -> "Already saved: ${r.memory.body}"
@@ -37,5 +50,7 @@ object ReplyText {
                 (if (r.items.size > 5) "; and ${r.items.size - 5} more." else ".")
         }
         Reply.ListeningForIdea -> "Go ahead, I'm listening. Take your time."
+        is Reply.ConfirmSecret -> "${r.service} password: ${r.value}. Is this right?" + if (r.replacing != null) " It will replace the old one." else ""
+        Reply.NotSaved -> "Okay, I didn't save it."
     }
 }

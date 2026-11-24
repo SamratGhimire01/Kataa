@@ -80,6 +80,14 @@ sealed interface Reply {
     data class NeedsClarification(val text: String) : Reply
     /** One sentence held several requests ("remind me to X and my Y is Z"); each got its own reply. */
     data class Several(val replies: List<Reply>) : Reply
+    /**
+     * A password was heard but not saved yet: show "[service] password: [value]. Is this right?". Yes ->
+     * [Assistant.confirmSecret]; a new value ("no, it's sunflower124") asks again; "no" -> [Reply.NotSaved].
+     * [replacing] is the current one for that service, when this would replace it.
+     */
+    data class ConfirmSecret(val service: String, val value: String, val replacing: Memory?, internal val pending: Understanding.Save, internal val raw: String) : Reply
+    /** The user said no to saving: nothing was stored. */
+    data object NotSaved : Reply
     /** "What do I have today?": the reminders for [label] ("today", "tomorrow", "coming up"), soonest first. */
     data class Agenda(val label: String, val items: List<AgendaItem>) : Reply
     /** "I've got an idea": the app listens longer (pauses don't end it), then calls [Assistant.saveIdea]. */
@@ -276,6 +284,22 @@ class Assistant(private val core: KataaCore) {
         }
     }
 
+    /**
+     * The user said yes to a [Reply.ConfirmSecret], maybe after fixing the [value] or the [service] on the card.
+     * Saves it (replacing the old one for that service) and returns [Reply.Saved] or [Reply.Replaced].
+     */
+    fun confirmSecret(c: Reply.ConfirmSecret, ctx: AssistantContext, value: String = c.value, service: String = c.service): Reply {
+        val v = value.trim().ifEmpty { return Reply.NotSaved }
+        val svc = service.trim().ifEmpty { c.service }
+        val same = v == c.pending.secret?.value && svc == c.pending.secret.service
+        val u = if (same) c.pending else c.pending.copy(
+            body = "${svc.replaceFirstChar { it.uppercase() }} password is $v",
+            subject = Text.subjectKey("${svc.lowercase()} password"),
+            secret = app.kataa.core.nlu.Secret(svc, v),
+        )
+        return save(c.raw, u, ctx, confirmed = true)
+    }
+
     /** "Save it" after a [Reply.NeedsClarification] or [Reply.NotFound]. */
     fun saveAsNote(raw: String, ctx: AssistantContext): Reply =
         save(raw, Understanding.Save(IntentParser.saveBody(raw), MemoryKind.NOTE, null, null), ctx)
@@ -287,7 +311,13 @@ class Assistant(private val core: KataaCore) {
         return core.memories.recent(limit = 400).firstOrNull { (kind == null || it.kind == kind) && IntentParser.sameKey(it.body) == key }
     }
 
-    private fun save(raw: String, u: Understanding.Save, ctx: AssistantContext): Reply {
+    private fun save(raw: String, u: Understanding.Save, ctx: AssistantContext, confirmed: Boolean = false): Reply {
+        // Spoken passwords are shown back for a yes (voice mishears letters and digits); typed ones are exact.
+        if (u.secret != null && !confirmed && ctx.source == Source.VOICE) {
+            val old = u.subject?.let { core.memories.historyFor(it)?.latest }
+            if (old != null && IntentParser.sameKey(old.body) == IntentParser.sameKey(u.body)) return Reply.AlreadySaved(old)
+            return Reply.ConfirmSecret(u.secret.service, u.secret.value, old, u, raw)
+        }
         if (u.replacesOld && u.subject != null) {
             val old = core.memories.historyFor(u.subject)?.latest
             if (old != null && IntentParser.sameKey(old.body) == IntentParser.sameKey(u.body)) return Reply.AlreadySaved(old)
@@ -334,6 +364,19 @@ class Assistant(private val core: KataaCore) {
      * Anything that is not an answer is handled as a new request.
      */
     fun followUp(previous: Reply, raw: String, ctx: AssistantContext): Reply {
+        if (previous is Reply.ConfirmSecret) {
+            val text = Text.normalize(raw)
+            if (YES.matches(text)) return confirmSecret(previous, ctx)
+            if (NO.matches(text)) return Reply.NotSaved
+            // "no it is sunflower124", "it's sunflower124": the corrected value, shown again for a yes.
+            CORRECT_VALUE.find(text)?.let { m ->
+                val fixed = m.groupValues[1].trim()
+                val i = raw.lowercase().lastIndexOf(fixed)
+                val v = if (i >= 0) raw.substring(i, i + fixed.length) else fixed
+                return previous.copy(value = v)
+            }
+            return handle(raw, ctx)
+        }
         val memory = when (previous) {
             is Reply.NeedsTime -> previous.memory
             is Reply.NeedsPlace -> previous.memory
@@ -569,12 +612,28 @@ class Assistant(private val core: KataaCore) {
 
     private fun browse(u: Understanding.BrowseCategory, ctx: AssistantContext): Reply {
         val key = Text.singular(Text.stripDeterminers(u.name))
+        if (key in VAULT_WORDS) {
+            // "show me all my passwords": the vault, after unlock.
+            if (!ctx.privateUnlocked) return Reply.NeedsUnlock(u.fallbackQuery)
+            val vault = core.categories.list().first { it.isPrivate }
+            return Reply.CategoryList(vault, secrets())
+        }
         val cat = core.categories.list().firstOrNull { c ->
             val n = c.name.lowercase()
             n == u.name || Text.singular(n) == key || c.slug == key || n.split(' ').any { Text.singular(it) == key }
         } ?: return ask(Understanding.Ask(u.fallbackQuery, QuestionType.GENERAL, null), ctx)
         if (cat.isPrivate && !ctx.privateUnlocked) return Reply.CategoryList(cat, emptyList())
-        return Reply.CategoryList(cat, core.categories.memoriesIn(cat.id))
+        val inside = core.categories.memoriesIn(cat.id)
+        // A password filed under Money too stays hidden until unlock.
+        val hidden = if (ctx.privateUnlocked) emptySet() else core.memories.privateIds(inside.map { it.id })
+        return Reply.CategoryList(cat, inside.filter { it.id !in hidden })
+    }
+
+    /** Every password and other private memory, newest first: the Private category plus secrets not yet classified. */
+    fun secrets(): List<Memory> {
+        val recent = core.memories.recent(limit = 2000)
+        val ids = core.memories.privateIds(recent.map { it.id })
+        return recent.filter { it.id in ids }
     }
 
     private fun lastMemory(ctx: AssistantContext): Memory? {
@@ -588,6 +647,10 @@ class Assistant(private val core: KataaCore) {
 
     companion object {
         private const val LAST_KEY = "assistant_last_memory_id"
+        private val YES = Regex("^(?:yes|yeah|yep|yup|ya|haan|ho|correct|right|that is right|that is correct|exactly|save it|save|ok|okay|ok save it|sure|confirm|yes save it|yes correct|perfect)$")
+        private val NO = Regex("^(?:no|nope|nah|cancel|do not save|do not save it|forget it|never mind|nevermind|stop|wrong)$")
+        private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
+        private val VAULT_WORDS = setOf("password", "passcode", "pin", "secret", "private", "code")
         private const val CORRECTION_WINDOW_MS = 30 * 60 * 1000L
         private const val SURE_SIMILARITY = 0.80
         private val VAGUE_HEADS = setOf("thing", "things", "stuff", "one", "again", "now", "today", "please", "number", "name")

@@ -22,8 +22,12 @@ class AssistantTest {
     private val bigMartBranch = GeoPoint(27.6915, 85.3420)
     private val home = GeoPoint(27.7000, 85.3000)
 
-    private fun say(s: String, at: GeoPoint? = null, unlocked: Boolean = false) =
-        core.assistant.handle(s, AssistantContext(clock.now, tz, at, unlocked))
+    /** Says [s]; a spoken password is shown back for a yes, which these tests always give. */
+    private fun say(s: String, at: GeoPoint? = null, unlocked: Boolean = false): Reply {
+        val ctx = AssistantContext(clock.now, tz, at, unlocked)
+        val r = core.assistant.handle(s, ctx)
+        return if (r is Reply.ConfirmSecret) core.assistant.followUp(r, "yes", ctx) else r
+    }
 
     private fun minutes(n: Int) { clock.now += n * 60_000L }
 
@@ -180,9 +184,8 @@ class AssistantTest {
     @Test fun privateStaysLockedByVoice() {
         say("my bank PIN is 4321")
         core.processPending()
-        val locked = say("show me my private stuff")
-        assertIs<Reply.CategoryList>(locked)
-        assertTrue(locked.memories.isEmpty())
+        // Locked: asks for fingerprint/PIN first, never lists them.
+        assertIs<Reply.NeedsUnlock>(say("show me my private stuff"))
         assertTrue((say("show me my private stuff", unlocked = true) as Reply.CategoryList).memories.isNotEmpty())
     }
 

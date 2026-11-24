@@ -19,8 +19,13 @@ class UnderstandingFixesTest {
     private val clock = FakeClock(LocalDateTime(2026, 11, 24, 10, 45).toInstant(tz).toEpochMilliseconds())
     private val core = newCore(clock)
 
-    private fun say(s: String, unlocked: Boolean = true): Reply =
-        core.assistant.handle(s, AssistantContext(clock.now, tz, privateUnlocked = unlocked)).also { core.processPending() }
+    private fun ctx(unlocked: Boolean = true) = AssistantContext(clock.now, tz, privateUnlocked = unlocked)
+
+    /** Says [s]; a spoken password must first be shown back, and is saved on "yes". */
+    private fun say(s: String, unlocked: Boolean = true): Reply {
+        val r = core.assistant.handle(s, ctx(unlocked))
+        return (if (r is Reply.ConfirmSecret) core.assistant.followUp(r, "yes", ctx(unlocked)) else r).also { core.processPending() }
+    }
 
     private fun fireAt(r: Reply): LocalDateTime {
         val set = assertIs<Reply.ReminderSet>(r, "$r")
@@ -33,6 +38,36 @@ class UnderstandingFixesTest {
         assertEquals(MemoryKind.FACT, saved.memory.kind)
         assertTrue(saved.memory.body.contains("sunflower123"))
         assertTrue((say("what is the wifi password") as Reply.Answer).shortAnswer.contains("sunflower123"))
+    }
+
+    @Test fun spokenPasswordIsConfirmedBeforeSaving() {
+        val ask = assertIs<Reply.ConfirmSecret>(core.assistant.handle("my wifi password is sunflower123", ctx()))
+        assertEquals("sunflower123", ask.value)
+        assertEquals(0, core.memories.recent().size, "nothing saved before yes")
+        // "No, it's sunflower124": shown again with the fix, then saved on yes.
+        val fixed = assertIs<Reply.ConfirmSecret>(core.assistant.followUp(ask, "no it's sunflower124", ctx()))
+        assertEquals("sunflower124", fixed.value)
+        val saved = core.assistant.followUp(fixed, "yes", ctx())
+        assertTrue(saved is Reply.Saved && saved.memory.body.contains("sunflower124"), "$saved")
+        // Never spoken aloud.
+        assertTrue("sunflower" !in ReplyText.spoken(fixed))
+        // "No" saves nothing.
+        val again = assertIs<Reply.ConfirmSecret>(core.assistant.handle("my gmail password is abc", ctx()))
+        assertIs<Reply.NotSaved>(core.assistant.followUp(again, "no", ctx()))
+        // Typed passwords are exact: saved at once.
+        assertIs<Reply.Saved>(core.assistant.handle("netflix password is nf2026", ctx().copy(source = app.kataa.core.model.Source.TEXT)))
+    }
+
+    @Test fun passwordsAreHiddenUntilUnlock() {
+        say("my atm pin is 4455")
+        // Hidden even before categories are worked out (no processPending here).
+        assertIs<Reply.NeedsUnlock>(core.assistant.handle("atm pin", ctx(unlocked = false)))
+        assertIs<Reply.NeedsUnlock>(core.assistant.handle("show me all my passwords", ctx(unlocked = false)))
+        val vault = assertIs<Reply.CategoryList>(core.assistant.handle("show me all my passwords", ctx()))
+        assertEquals(1, vault.memories.size)
+        assertEquals("Atm pin is ••••••", app.kataa.core.memory.Secrets.masked("Atm pin is 4455"))
+        assertEquals("Facebook", app.kataa.core.memory.Secrets.service("My Facebook password is Samrat 001"))
+        assertTrue(!app.kataa.core.memory.Secrets.looksSecret("Locker combination is on the gym card", app.kataa.core.model.MemoryKind.NOTE, null))
     }
 
     @Test fun otherPasswordWordings() {

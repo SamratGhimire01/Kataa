@@ -78,7 +78,8 @@ class MindModelTest {
         m.warmUp()
         fun say(s: String, unlocked: Boolean = true): app.kataa.core.assistant.Reply {
             val t0 = System.nanoTime()
-            val r = core.assistant.handle(s, app.kataa.core.assistant.AssistantContext(clock.now, tz, privateUnlocked = unlocked))
+            val c = app.kataa.core.assistant.AssistantContext(clock.now, tz, privateUnlocked = unlocked)
+            val r = core.assistant.handle(s, c).let { if (it is app.kataa.core.assistant.Reply.ConfirmSecret) core.assistant.followUp(it, "yes", c) else it }
             core.processPending()
             println("TALK %5d ms  %-75s -> %s".format((System.nanoTime() - t0) / 1_000_000, "\"$s\"", app.kataa.core.assistant.ReplyText.of(r)))
             return r
