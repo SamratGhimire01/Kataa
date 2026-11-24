@@ -119,7 +119,7 @@ object Text {
 
     /** "march twenty first", "the twenty third of may": spoken day numbers next to a month, as digits ("march 21st"). */
     private fun ordinalDates(input: String): String {
-        var s = input.replace(Regex("\\b($MONTHS_NOT_NAMES|(?<=\\b(?:on|is|in|of|by|until|till) )may) (?:the )?$ORDW\\b(?! thing)")) { m ->
+        var s = input.replace(Regex("\\b($MONTHS_NOT_NAMES|(?<=\\b(?:on|is|in|of|by|until|till) )(?:may|jan)) (?:the )?$ORDW\\b(?! thing)")) { m ->
             ordinalNumber(m.groupValues[2], m.groupValues[3])?.let { "${m.groupValues[1]} $it" } ?: m.value
         }
         s = s.replace(Regex("\\b$ORDW(?= of $MONTHS\\b)")) { m -> ordinalNumber(m.groupValues[1], m.groupValues[2]) ?: m.value }

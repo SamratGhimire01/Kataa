@@ -81,7 +81,7 @@ object IntentParser {
     private val DID_I = Regex("^(?:did|have) i (?:already )?(.+?)(?: already)?(?: (today|this morning|tonight|yesterday|this evening))?$")
     private val WHERE = Regex("^where(?: is| are| was| were| did i (?:put|leave|keep|park|hide|place|store|drop)| have i (?:put|left|kept|parked)| do i keep| i put| is it that i (?:put|left))?(?: my| the| our)? (.+?)(?: again| now| at)?$")
     private val WHERE_PARKED = Regex("^where (?:did|have) (?:i|we) park(?:ed)?(?: the car| my car)?(?: again)?$|^where is (?:my |the )?(?:car|parking)$")
-    private val QUESTION_START = Regex("^(?:give me|get me|tell me|show me|send me|i need|i want to know|i forgot|i do not remember|remind me what|what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
+    private val QUESTION_START = Regex("^(?:give me|get me|tell me|show me|send me|i need(?! to\\b)|i want to know|i forgot|i do not remember|remind me what|what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
     private val REMIND_CUE = Regex("\\bremind me\\b|^(?:please )?remind (?:to|about)\\b|\\b(?:alert|notify|ping|nudge) me\\b|^(?:remember|do not forget|make sure i|make sure to|do not let me forget) to\\b|^(?:do not let me forget|do not forget|never let me forget)\\b|\\bnag me\\b|\\bkeep reminding me\\b")
     private val OBLIGATION = Regex("\\b(?:i |we )?(?:have to|need to|must|should|got to|gotta|ought to)\\b")
     private val PERSISTENT = Regex("\\b(?:keep reminding me|nag me|until i (?:do it|mark it|say done|finish)|do not let me forget|important|really important|must not forget)\\b")
@@ -243,8 +243,8 @@ object IntentParser {
 
     /** Every way of saying a password: one current value per service, so a new one replaces the old. */
     private fun password(text: String, raw: String): Understanding.Save? {
-        // "my wifi password is pa$$?": a typed password that ends in "?" is not a question.
-        val endsInValue = Regex("(?i)\\b(?:password|passcode|pin)\\b.*\\s(?:is|=)\\s+\\S*[^A-Za-z\\s?]\\S*\\?$").containsMatchIn(raw.trim()) &&
+        // "my wifi password is pa$$?", "... is hello123?": a statement that ends in "?" is not a question.
+        val endsInValue = Regex("(?i)\\b(?:password|passcode|pin)\\b.*\\s(?:is|=)\\s+\\S+\\?$").containsMatchIn(raw.trim()) &&
             !Regex("^(?:what|which|where|when|who|how|is|are|do|did|does|can|could|have|has)\\b").containsMatchIn(text)
         if (Text.isQuestionMarked(raw) && !endsInValue || TRAILING_WHAT.containsMatchIn(text)) return null
         val (service, value) = (PW_CHANGED.find(text) ?: PW_CHANGE.find(text))?.let { m ->
@@ -308,6 +308,8 @@ object IntentParser {
         while (end < raw.length && !raw[end].isWhitespace()) end++
         var v = raw.substring(i, end)
         if (end == raw.trimEnd().length && v.length > lower.length && (v.endsWith(".") || v.endsWith(",")) && !v.endsWith("..")) v = v.dropLast(1)
+        // "hello123?": the recognizer's question mark. Kept only after symbols ("pa$$?").
+        if (end == raw.trimEnd().length && v.endsWith("?") && v.dropLast(1).all(Char::isLetterOrDigit)) v = v.dropLast(1)
         return v
     }
 

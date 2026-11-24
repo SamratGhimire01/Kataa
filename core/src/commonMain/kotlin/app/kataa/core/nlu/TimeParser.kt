@@ -79,7 +79,7 @@ object TimeParser {
     private val WEEKDAY = Regex("\\b(?:on |this |next |coming )?$DAYNAME(?: (morning|afternoon|evening|night))?\\b")
     private val DATE_DM = Regex("\\b(?:on )?(?:the )?(\\d{1,2})(?:st|nd|rd|th)?(?: of)? $MONTHNAME\\b")
     private val DATE_MD = Regex("\\b(?:on )?$MONTHNAME (\\d{1,2})(?:st|nd|rd|th)?\\b")
-    private val DATE_D = Regex("\\bon the (\\d{1,2})(?:st|nd|rd|th)\\b")
+    private val DATE_D = Regex("\\bon the (\\d{1,2})(?:st|nd|rd|th)\\b|\\bthe (\\d{1,2})(?:st|nd|rd|th)(?= at\\b| by\\b| in the\\b| morning\\b| evening\\b| night\\b|$)")
 
     fun parse(text: String, nowMs: Long, tz: TimeZone): TimeMatch? {
         val now = Instant.fromEpochMilliseconds(nowMs)
@@ -313,7 +313,7 @@ object TimeParser {
         DATE_DM.find(text)?.let { m -> return resolveDate(m.groupValues[1].toInt(), MONTHS[m.groupValues[2]]!!, today)?.let { it to m.range } }
         DATE_MD.find(text)?.let { m -> return resolveDate(m.groupValues[2].toInt(), MONTHS[m.groupValues[1]]!!, today)?.let { it to m.range } }
         DATE_D.find(text)?.let { m ->
-            val day = m.groupValues[1].toInt()
+            val day = m.groupValues[1].ifEmpty { m.groupValues[2] }.toInt()
             var month = today.month.number
             var year = today.year
             if (day < today.day) { month += 1; if (month > 12) { month = 1; year++ } }

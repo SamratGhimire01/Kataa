@@ -612,6 +612,30 @@ class ListsAndJournalTest {
         assertIs<Reply.Answer>(two.replies.first())
     }
 
+    @Test fun reviewFindingsPass12() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun body(r: Reply) = core.memories.get(set(r).memoryId)!!.body.trimEnd('.')
+        fun answer(q: String, a: String) = core.assistant.followUp(assertIs<Reply.PickTime>(say(q), q), a, ctx())
+        // 1, 2: "and do the ...", "and is the ..." inside a reminder stay in it, with the time.
+        val dishes = say("remind me to wash the car and do the dishes tomorrow at 5 pm")
+        assertEquals("2026-11-25T17:00", local(set(dishes).fireAt!!)); assertTrue(body(dishes).contains("do the dishes"))
+        val gas = say("remind me to check if the gas is off and is the door locked tonight at 10 pm")
+        assertEquals("2026-11-24T22:00", local(set(gas).fireAt!!)); assertTrue(body(gas).contains("is the door locked"))
+        // 3: "on jan first".
+        assertEquals("2027-01-01", local(set(say("remind me on jan first to renew insurance")).fireAt!!).take(10))
+        // 4: a "?" after a plain value is the recognizer's, not the password's.
+        assertEquals("hello123", assertIs<Reply.ConfirmSecret>(say("my wifi password is hello123?")).value)
+        // 5, 6: "in 2 hours" and a new clock on the AM/PM card.
+        assertEquals("2026-11-24T10:00", local(set(answer("call didi at 7:13", "in 2 hours")).fireAt!!))
+        val nine = assertIs<Reply.PickTime>(answer("call hari at 7:13", "at 9:30"))
+        assertEquals(listOf("2026-11-24T09:30", "2026-11-24T21:30"), nine.options.map { local(it.atMs) })
+        // 7: "the 25th at 6 pm".
+        assertEquals("2026-11-25T18:00", local(set(say("remind me to call sita the 25th at 6 pm")).fireAt!!))
+        // 8: "I need to ..." is a task, not a search.
+        assertTrue(say("i need to clean the kitchen") !is Reply.NotFound)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()

@@ -175,8 +175,10 @@ class Assistant(private val core: KataaCore) {
      */
     private fun splitByRules(raw: String, ctx: AssistantContext): Reply? {
         val text = Text.normalize(raw)
-        if (!SPLIT.containsMatchIn(text)) return null
-        val parts = text.split(SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
+        val firstIsQuestion = Regex("^(?:what|where|when|which|who|how|is|are|did|do|does)\\b").containsMatchIn(text)
+        val split = if (firstIsQuestion && SPLIT_YES_NO.containsMatchIn(text)) Regex("${SPLIT.pattern}|${SPLIT_YES_NO.pattern}") else SPLIT
+        if (!split.containsMatchIn(text)) return null
+        val parts = text.split(split).map { it.trim() }.filter { it.isNotEmpty() }
         if (parts.size !in 2..3 || parts.any { it.split(' ').size < 3 }) return null
         val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
         val meant = parts.map { IntentParser.parse(it, ctx.nowMs, ctx.timeZone, known) }
@@ -629,7 +631,7 @@ class Assistant(private val core: KataaCore) {
      */
     private fun clockOf(text: String): Pair<Int, Int?>? {
         val month = "(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
-        val s = text.replace(Regex("\\b(?:in|after|for) \\d+ (?:days?|weeks?|months?|years?)\\b"), " ")
+        val s = text.replace(Regex("\\b(?:in|after|for) (?:\\d+|an?|half an?) (?:days?|weeks?|months?|years?|hours?|hrs?|minutes?|mins?)\\b"), " ")
             .replace(Regex("\\b$month (?:the )?\\d{1,2}(?:st|nd|rd|th)?\\b"), " ")
             .replace(Regex("\\b\\d{1,2}(?:st|nd|rd|th)?(?: of)? $month\\b"), " ")
             .replace(Regex("\\b\\d{1,2}(?:st|nd|rd|th)\\b|\\b\\d{4}\\b"), " ")
@@ -764,8 +766,12 @@ class Assistant(private val core: KataaCore) {
             }
             if (pick != null) return pickTimeOption(previous, pick, ctx)
             // A whole new time ("tomorrow at 8 pm"): schedule that instead.
-            TimeParser.parse(text, ctx.nowMs, ctx.timeZone)?.takeIf { it.alternative == null }?.let { t ->
-                return schedule(previous.memory, t, null, previous.persistent, ctx)
+            TimeParser.parse(text, ctx.nowMs, ctx.timeZone)?.let { t ->
+                if (t.alternative == null) return schedule(previous.memory, t, null, previous.persistent, ctx)
+                // "at 9:30": a new clock, still AM or PM: ask again for it.
+                val alt = t.alternative
+                return previous.copy(options = listOf(t.fireAt, alt).sortedBy { it.toEpochMilliseconds() }
+                    .map { TimeOption(it.toEpochMilliseconds(), Describe.time(it, null, ctx)) })
             }
             return handle(raw, ctx)
         }
@@ -1092,7 +1098,9 @@ class Assistant(private val core: KataaCore) {
         /** Second hit within 8% of the first: let the mind choose between them. */
         private const val NEAR_TIE = 0.92
         /** Where a second request starts. The lookahead keeps "my"/"the"/"i" with the second part. */
-        private val SPLIT = Regex("\\s(?:and also|and then|and|also|plus)\\s(?=(?:my|the|our|i|remind|also)\\b|(?:what|where|when|which|who|how) (?:is|are|was|were|do|did|does)\\b|did i\\b|(?:is|are|was|were|does|do|did) (?:it|they|he|she|there|my|the)\\b)")
+        private val SPLIT = Regex("\\s(?:and also|and then|and|also|plus)\\s(?=(?:my|the|our|i|remind|also)\\b|(?:what|where|when|which|who|how) (?:is|are|was|were|do|did|does)\\b|did i\\b)")
+        /** "where is my passport and is it expired": a yes/no question after a question (never inside a reminder). */
+        private val SPLIT_YES_NO = Regex("\\s(?:and|also)\\s(?=(?:is|are|was|were|does|do|did) (?:it|they|he|she|there|my|the)\\b)")
         private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
         private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
         private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")
