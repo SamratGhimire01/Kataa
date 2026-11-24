@@ -1,0 +1,110 @@
+package app.kataa.core.assistant
+
+import app.kataa.core.FakeClock
+import app.kataa.core.model.MemoryKind
+import app.kataa.core.newCore
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
+import kotlinx.datetime.toLocalDateTime
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+import kotlin.time.Instant
+
+/** The sentences that went wrong in the 24 Nov 2026 simulation, rules only (no AI). Each must stay fixed. */
+class UnderstandingFixesTest {
+    private val tz = TimeZone.of("Asia/Kathmandu")
+    private val clock = FakeClock(LocalDateTime(2026, 11, 24, 10, 45).toInstant(tz).toEpochMilliseconds())
+    private val core = newCore(clock)
+
+    private fun say(s: String, unlocked: Boolean = true): Reply =
+        core.assistant.handle(s, AssistantContext(clock.now, tz, privateUnlocked = unlocked)).also { core.processPending() }
+
+    private fun fireAt(r: Reply): LocalDateTime {
+        val set = assertIs<Reply.ReminderSet>(r, "$r")
+        return Instant.fromEpochMilliseconds(set.reminders.single().fireAt!!).toLocalDateTime(tz)
+    }
+
+    @Test fun passwordSaidAsWriteThePasswordOf() {
+        val r = say("Write the password of wifi sunflower123")
+        val saved = assertIs<Reply.Saved>(r, "$r")
+        assertEquals(MemoryKind.FACT, saved.memory.kind)
+        assertTrue(saved.memory.body.contains("sunflower123"))
+        assertTrue((say("what is the wifi password") as Reply.Answer).shortAnswer.contains("sunflower123"))
+    }
+
+    @Test fun otherPasswordWordings() {
+        for (s in listOf("Save my Instagram password samrat@123", "netflix password is nf2026", "password for gmail is Kathmandu#45")) {
+            val r = say(s)
+            assertTrue(r is Reply.Saved && r.memory.kind == MemoryKind.FACT, "$s -> $r")
+        }
+        assertTrue((say("instagram password") as Reply.Answer).shortAnswer.contains("samrat@123"))
+    }
+
+    @Test fun changePasswordReplacesTheOldOne() {
+        say("My Facebook password is Samrat 001")
+        assertIs<Reply.Replaced>(say("change my facebook password to Samrat 002"))
+        val a = assertIs<Reply.Answer>(say("facebook password"))
+        assertTrue(a.memory.body.contains("Samrat 002"), "$a")
+    }
+
+    @Test fun alarms() {
+        assertEquals(LocalDateTime(2026, 11, 25, 5, 0), fireAt(say("wake me up at 5 am")))
+        assertEquals(LocalDateTime(2026, 11, 24, 19, 0), fireAt(say("set an alarm for 7")))
+    }
+
+    @Test fun agendaQuestions() {
+        say("remind me to call mom at 6 30 pm")
+        say("remind me tomorrow at 9 to pay rent")
+        val today = assertIs<Reply.Agenda>(say("what do I have to do today"))
+        assertEquals(listOf("Call mom"), today.items.map { it.memory.body })
+        assertIs<Reply.Agenda>(say("what are my reminders")).let { assertEquals(2, it.items.size) }
+        assertIs<Reply.Agenda>(say("what do I have tomorrow")).let { assertEquals(listOf("Pay rent"), it.items.map { i -> i.memory.body }) }
+        assertEquals(2, core.reminders.active().size, "asking must not create reminders")
+    }
+
+    @Test fun unknownQuestionIsNotAnsweredWithARandomNote() {
+        say("remind me to call mom at 6 30 pm")
+        assertIs<Reply.NotFound>(say("what is my mom's birthday"))
+        say("mom's birthday is 12 march")
+        assertTrue((say("when is mom's birthday") as Reply.Answer).shortAnswer.contains("12 march", ignoreCase = true))
+    }
+
+    @Test fun fillersAreIgnored() {
+        say("the charger is in my office bag")
+        val a = say("ugh where did i leave the stupid charger again")
+        assertTrue(a is Reply.Answer && a.shortAnswer.contains("office bag", true), "$a")
+        val r = say("uh remind me uh to um call didi at like 7")
+        assertEquals(19, fireAt(r).hour)
+        assertEquals("Call didi", (r as Reply.ReminderSet).memory.body)
+    }
+
+    @Test fun remindWithoutMe() {
+        val r = say("remind to buy milk")
+        assertTrue(r is Reply.NeedsTime && r.memory.body == "Buy milk", "$r")
+    }
+
+    @Test fun whoOwesMeMoney() {
+        say("Ram owes me 500 rupees")
+        val a = say("who owes me money")
+        assertTrue(a is Reply.Answer && a.memory.body.contains("Ram"), "$a")
+    }
+
+    @Test fun twoThingsInOneSentence() {
+        val r = say("I have to submit the assignment the day after tomorrow at 10 and my bike is parked near the gate")
+        val several = assertIs<Reply.Several>(r, "$r")
+        assertTrue(several.replies.any { it is Reply.ReminderSet } && several.replies.any { it is Reply.Saved }, "$r")
+    }
+
+    @Test fun ideaModeStarts() {
+        for (s in listOf("I've got an idea", "I have an idea", "note this idea", "I got one idea")) {
+            assertIs<Reply.ListeningForIdea>(say(s), s)
+        }
+        val saved = core.assistant.saveIdea("Open a small momo shop near the college gate. Cheap lunch sets for students.", AssistantContext(clock.now, tz))
+        assertIs<Reply.Saved>(saved)
+        val a = say("what was my idea about the momo shop")
+        assertTrue(a is Reply.Answer && a.memory.body.contains("momo shop"), "$a")
+    }
+}

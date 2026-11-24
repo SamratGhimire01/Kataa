@@ -30,5 +30,12 @@ object ReplyText {
             else -> "Okay."
         }
         is Reply.Several -> r.replies.joinToString(" ") { of(it) }
+        is Reply.Agenda -> when (r.items.size) {
+            0 -> if (r.label == "coming up") "You have no reminders." else "Nothing for ${r.label}."
+            else -> (if (r.label == "coming up") "You have ${r.items.size}: " else "${r.label.replaceFirstChar { it.uppercase() }}: ") +
+                r.items.take(5).joinToString("; ") { i -> i.memory.body.trimEnd('.') + (if (i.description.isNotEmpty()) ", ${i.description.replaceFirstChar { it.lowercase() }}" else "") } +
+                (if (r.items.size > 5) "; and ${r.items.size - 5} more." else ".")
+        }
+        Reply.ListeningForIdea -> "Go ahead, I'm listening. Take your time."
     }
 }

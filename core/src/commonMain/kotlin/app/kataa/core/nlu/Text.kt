@@ -31,6 +31,25 @@ object Text {
         return s.trim().trimEnd('.', '!', '?', ';', ':', ',').trim()
     }
 
+    private val HESITATION = Regex("\\b(?:u+h+|u+m+|uhm+|hmm+|e+r+m*|ah+)\\b")
+    private val LEAD_INTERJECTION = Regex("^(?:(?:ugh|oh|ah|so|ok so|okay so|well|bro|yaar|dude|listen|hey kataa|kataa)\\s+)+")
+    private val SWEAR = Regex("\\b(?:stupid|damn|damned|freaking|fucking|bloody|silly|goddamn)\\s+")
+    private val TRAIL = Regex("\\s+(?:bro|yaar|dude|man|please)$")
+
+    /**
+     * Drops what people say while thinking ("uh", "um", "ugh ...", "the stupid charger", "at like 7"), so the rules
+     * see the sentence itself. Never removes content words: "I like tea" keeps "like".
+     */
+    fun stripFillers(normalized: String): String {
+        var s = normalized.replace(HESITATION, " ").replace(Regex("\\s+"), " ").trim()
+        val lead = s.replace(LEAD_INTERJECTION, "")
+        if (lead.split(' ').size >= 2) s = lead
+        s = s.replace(SWEAR, "")
+        s = s.replace(Regex("\\blike (?=\\d|around|about|half|quarter)"), "")
+        s = s.replace(TRAIL, "")
+        return s.replace(Regex("\\s+"), " ").trim()
+    }
+
     private val HOUR_WORDS = mapOf(
         "one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5, "six" to 6, "seven" to 7, "eight" to 8,
         "nine" to 9, "ten" to 10, "eleven" to 11, "twelve" to 12,

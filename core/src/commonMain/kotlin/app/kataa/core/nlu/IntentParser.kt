@@ -36,6 +36,10 @@ sealed interface Understanding {
     data class SavePlace(val name: String, val explicit: Boolean) : Understanding
     data class CreateCategory(val name: String, val description: String?) : Understanding
     data class BrowseCategory(val name: String, val fallbackQuery: String) : Understanding
+    /** "What do I have today?", "what are my reminders": list reminders. [dayOffset] 0 = today, 1 = tomorrow, null = all. */
+    data class Agenda(val dayOffset: Int?) : Understanding
+    /** "I've got an idea": listen longer, then save what follows as an idea. */
+    data object StartIdea : Understanding
     /** Too short or ambiguous: the app should ask "Save this or search for it?". */
     data class Unclear(val text: String) : Understanding
 }
@@ -55,10 +59,30 @@ object IntentParser {
     private val WHERE = Regex("^where(?: is| are| was| were| did i (?:put|leave|keep|park|hide|place|store|drop)| have i (?:put|left|kept|parked)| do i keep| i put| is it that i (?:put|left))?(?: my| the| our)? (.+?)(?: again| now| at)?$")
     private val WHERE_PARKED = Regex("^where (?:did|have) (?:i|we) park(?:ed)?(?: the car| my car)?(?: again)?$|^where is (?:my |the )?(?:car|parking)$")
     private val QUESTION_START = Regex("^(?:give me|get me|tell me|show me|send me|i need|i want to know|i forgot|i do not remember|remind me what|what|when|where|who|whom|which|why|how|whose|is|are|was|were|do|does|did|can|could|have|has|had|will|should|would|tell me|find|search|look up|show me|any idea|do you know|remind me what|what about)\\b")
-    private val REMIND_CUE = Regex("\\bremind me\\b|\\b(?:alert|notify|ping|nudge) me\\b|^(?:remember|do not forget|make sure i|make sure to|do not let me forget) to\\b|^(?:do not let me forget|do not forget|never let me forget)\\b|\\bnag me\\b|\\bkeep reminding me\\b")
+    private val REMIND_CUE = Regex("\\bremind me\\b|^(?:please )?remind (?:to|about)\\b|\\b(?:alert|notify|ping|nudge) me\\b|^(?:remember|do not forget|make sure i|make sure to|do not let me forget) to\\b|^(?:do not let me forget|do not forget|never let me forget)\\b|\\bnag me\\b|\\bkeep reminding me\\b")
     private val OBLIGATION = Regex("\\b(?:i |we )?(?:have to|need to|must|should|got to|gotta|ought to)\\b")
     private val PERSISTENT = Regex("\\b(?:keep reminding me|nag me|until i (?:do it|mark it|say done|finish)|do not let me forget|important|really important|must not forget)\\b")
     private val LOG_DONE = Regex("^(?:i |we )(?:just |already |have |have just )*(took|locked|fed|paid|turned off|switched off|turned on|switched on|closed|watered|gave|called|sent|charged|cleaned|took out|unplugged|plugged in|finished|did|submitted|returned|ate|drank|shut)\\b\\s*(.*)$")
+
+    private val AGENDA = Regex(
+        "^(?:what|anything)(?: else)?(?: do| have)? (?:i|we) (?:have|got|need to do|have to do|have planned)(?: to do| planned| on)?(?: (today|tonight|tomorrow|this week|now))?$" +
+            "|^(?:what are|what is|show|list|show me|tell me|read|read me|what about)(?: all)?(?: of)? my (?:reminders|tasks|plans|plan|to dos|todos|to do list|schedule|agenda)(?: for)?(?: (today|tonight|tomorrow|this week))?$" +
+            "|^(?:do i have |are there |i have )?any (?:reminders|tasks|plans)(?: for)?(?: (today|tonight|tomorrow|this week))?$" +
+            "|^(?:my )?(?:reminders|agenda|schedule|plans)(?: for)?(?: (today|tonight|tomorrow|this week))?$",
+    )
+    private val IDEA = Regex("^(?:i |we )?(?:have |have got |got |have just got |just got )?(?:a |an |one |another |a new |new |big |a big )?(?:idea|thought)(?: for you| to save)?$" +
+        "|^(?:note|save|write|remember|take)(?: down)? (?:this|my|an|a|one)(?: new)? idea$|^(?:let me|i want to|i wanna) (?:tell you|share)(?: an| my| one)? (?:idea|something|a thought)$|^(?:listen|start) idea(?: mode)?$|^idea time$")
+    private val ALARM = Regex("^(?:please )?(?:can you |could you )?(?:wake me(?: up)?|set (?:an |the |my |a )?alarm|alarm)\\b(?: (?:for|at))?\\s*(.*)$")
+    /** "write the password of wifi sunflower123", "save password for gmail is x". Group 1: what follows the keyword. */
+    private val PW_OF = Regex("^(?:please )?(?:write|save|note|store|remember|keep|add|put)(?: down)?(?: that)?(?: my| the| this| a)? (?:password|passcode|pin|pin code) (?:of|for) (.+)$")
+    /** "the password for gmail is x" said as a statement. */
+    private val PW_FOR_IS = Regex("^(?:my |the |our )?(?:password|passcode|pin|pin code) (?:of|for) (?:my |the |our )?(.+?) (?:is|=) (.+)$")
+    /** "save my instagram password samrat@123", "write wifi password as abc". */
+    private val PW_SAVE = Regex("^(?:please )?(?:write|save|note|store|remember|keep|add|put)(?: down)?(?: that)?(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: is| as| =)? (\\S.*)$")
+    /** "netflix password is nf2026" without "my". */
+    private val PW_BARE = Regex("^(?:the |our )?((?:[a-z0-9'-]+ ){0,2}?[a-z0-9'-]+) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
+    /** "change my facebook password to x", "my new facebook password is x". */
+    private val PW_CHANGE = Regex("^(?:please )?(?:change|update|set|reset|replace)(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: to| as| into| with|=)? (\\S.*)$|^(?:my |the |our )?new (.+?) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
 
     /** "My facebook password is what" / "my locker code is what is": a question said backwards. */
     private val TRAILING_WHAT = Regex("\\b(?:is|are|was)? ?what(?: is| was| it is)?$")
@@ -71,7 +95,7 @@ object IntentParser {
     private val HOME_WORDS = setOf("home", "house", "office", "work", "hostel", "room", "my room")
 
     fun parse(raw: String, nowMs: Long, tz: TimeZone, knownPlaceNames: Set<String> = emptySet()): Understanding {
-        val text = Text.normalize(raw)
+        val text = Text.stripFillers(Text.normalize(raw))
         if (text.isEmpty()) return Understanding.Unclear(raw)
         val questionMark = Text.isQuestionMarked(raw)
 
@@ -87,6 +111,22 @@ object IntentParser {
         SAVE_PLACE_SOFT.find(text)?.let { m ->
             val name = m.groupValues[1].trim()
             if (name.split(' ').size <= 3 && TimeParser.parse(text, nowMs, tz) == null) return Understanding.SavePlace(name, explicit = false)
+        }
+
+        if (IDEA.matches(text)) return Understanding.StartIdea
+        AGENDA.find(text)?.let { m ->
+            val day = m.groupValues.drop(1).firstOrNull { it.isNotEmpty() }
+            return Understanding.Agenda(when (day) { "today", "tonight", "now" -> 0; "tomorrow" -> 1; else -> null })
+        }
+        password(text, raw)?.let { return it }
+        ALARM.find(text)?.let { m ->
+            val wake = text.contains("wake")
+            val whenText = m.groupValues[1].trim()
+            val at = if (Regex("^\\d").containsMatchIn(whenText)) "at $whenText" else whenText
+            val t = TimeParser.parse(at, nowMs, tz)
+            if (t != null || whenText.isEmpty()) {
+                return Understanding.Remind(if (wake) "Wake up" else "Alarm", t, null, persistent = true)
+            }
         }
 
         // "my facebook password is what" / "... what is": the recognizer heard a question backwards.
@@ -165,6 +205,41 @@ object IntentParser {
         return (listOf(verb) + words.drop(1).map(Text::singular)).joinToString(" ")
     }
 
+    /** Every way of saying a password: one current value per service, so a new one replaces the old. */
+    private fun password(text: String, raw: String): Understanding.Save? {
+        if (Text.isQuestionMarked(raw) || TRAILING_WHAT.containsMatchIn(text)) return null
+        val (service, value) = PW_CHANGE.find(text)?.let { m ->
+            if (m.groupValues[1].isNotEmpty()) m.groupValues[1] to m.groupValues[2] else m.groupValues[3] to m.groupValues[4]
+        } ?: PW_FOR_IS.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
+            ?: PW_OF.find(text)?.let { m ->
+                // "wifi sunflower123" or "wifi is sunflower123": the last word is the password unless "is" splits it.
+                val rest = m.groupValues[1].removePrefix("my ").removePrefix("the ")
+                val i = rest.indexOf(" is ")
+                when {
+                    i > 0 -> rest.substring(0, i) to rest.substring(i + 4)
+                    rest.contains(' ') -> rest.substringBeforeLast(' ') to rest.substringAfterLast(' ')
+                    else -> return null
+                }
+            }
+            ?: PW_SAVE.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
+            ?: PW_BARE.find(text)?.takeIf { it.groupValues[1] !in setOf("my", "your", "his", "her", "what", "which") }?.let { it.groupValues[1] to it.groupValues[2] }
+            ?: return null
+        val svc = service.trim().removePrefix("my ").removePrefix("the ").trim()
+        val v = value.trim()
+        if (svc.isEmpty() || v.isEmpty() || svc.split(' ').size > 4 || v.startsWith("in ") || v.startsWith("on ")) return null
+        val shownService = restoreCase(svc, raw).replaceFirstChar { it.uppercase() }
+        // Said as a plain statement ("my wifi password is x"): keep the user's own words. Otherwise write it clearly.
+        val statement = Regex("\\b(?:password|passcode|pin|pin code) (?:is|=) ").containsMatchIn(text) && !text.startsWith("change") && !Regex("\\bnew\\b").containsMatchIn(text)
+        val body = if (statement) saveBody(raw) else "$shownService password is ${originalCase(v, raw)}"
+        return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey("$svc password"), null, replacesOld = true)
+    }
+
+    /** [lower] as the user typed it (passwords are case-sensitive), when it can be found in [raw]. */
+    private fun originalCase(lower: String, raw: String): String {
+        val i = raw.lowercase().lastIndexOf(lower)
+        return if (i >= 0) raw.substring(i, i + lower.length) else lower
+    }
+
     /** The note as the user said it, minus "remember that" and similar, keeping their capitalization. */
     fun saveBody(raw: String): String {
         val trimmed = raw.trim().trimEnd('.', '!')
@@ -189,7 +264,7 @@ object IntentParser {
 
     private val REMINDER_LEAD = Regex(
         "^(?:(?:hey |ok |okay )?(?:kataa|kai)\\s*)?(?:please |can you |could you |would you )*" +
-            "(?:keep reminding me|remind me|nag me|alert me|notify me|ping me|nudge me|remember|do not forget|do not let me forget|make sure i|make sure|note)?" +
+            "(?:keep reminding me|remind me|remind|nag me|alert me|notify me|ping me|nudge me|remember|do not forget|do not let me forget|make sure i|make sure|note)?" +
             "(?: to| that| about)?\\s*(?:i |we )?(?:have to|need to|must|should|got to|gotta|ought to|will)?\\s*(?:to )?",
     )
     private val REMINDER_TAIL = Regex("\\s*(?:please|for me|okay|ok|thanks|thank you|until i do it|it is important|important)$")

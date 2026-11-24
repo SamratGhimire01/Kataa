@@ -59,7 +59,7 @@ class SimulationTest {
         val lib = System.getProperty("kataa.llmLib").orEmpty()
         val gguf = System.getProperty("kataa.llmModel").orEmpty()
         run("rules", null)
-        if (lib.isNotEmpty() && File(gguf).exists()) {
+        if (System.getenv("KATAA_SIM_RULES_ONLY") == null && lib.isNotEmpty() && File(gguf).exists()) {
             LlamaNative.load(lib)
             LlamaModel.open(gguf, threads = 4, fast = false)?.use { run("ai", Mind(it).also { m -> m.warmUp(); m.budgetMs = 0 }) }
         }

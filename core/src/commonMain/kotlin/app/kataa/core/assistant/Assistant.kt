@@ -80,9 +80,16 @@ sealed interface Reply {
     data class NeedsClarification(val text: String) : Reply
     /** One sentence held several requests ("remind me to X and my Y is Z"); each got its own reply. */
     data class Several(val replies: List<Reply>) : Reply
+    /** "What do I have today?": the reminders for [label] ("today", "tomorrow", "coming up"), soonest first. */
+    data class Agenda(val label: String, val items: List<AgendaItem>) : Reply
+    /** "I've got an idea": the app listens longer (pauses don't end it), then calls [Assistant.saveIdea]. */
+    data object ListeningForIdea : Reply
     /** "ok thanks", "hello": nothing to save or search. [said] is the normalized text. */
     data class SmallTalk(val said: String) : Reply
 }
+
+/** One line of an [Reply.Agenda]: the reminder, its note, and when or where it fires ("6:30 PM", "at Big Mart"). */
+data class AgendaItem(val memory: Memory, val reminder: Reminder, val description: String)
 
 /**
  * One entry point for everything the user says or types: `handle("where are my keys?")`.
@@ -101,6 +108,8 @@ class Assistant(private val core: KataaCore) {
         if (SMALL_TALK.matches(said)) return Reply.SmallTalk(said)
         val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
         val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone, known)
+        // Two requests in one sentence that the rules can each read on their own: no need for the AI.
+        splitByRules(raw, ctx)?.let { return it }
         val m = mind
         if (m != null && needsMind(u, raw)) {
             val commands = runCatching { m.understand(raw, today(ctx)) }.getOrNull()
@@ -116,6 +125,61 @@ class Assistant(private val core: KataaCore) {
             }
         }
         return reply
+    }
+
+    /**
+     * "I have to submit the assignment on Friday and my bike is parked near the gate": split where a new clause
+     * starts ("and my", "and also", "and the"), and keep the split only if every part means something by itself.
+     */
+    private fun splitByRules(raw: String, ctx: AssistantContext): Reply? {
+        val text = Text.normalize(raw)
+        if (!SPLIT.containsMatchIn(text)) return null
+        val parts = text.split(SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size !in 2..3 || parts.any { it.split(' ').size < 3 }) return null
+        val known = core.places.userPlaces().map { it.label.lowercase() }.toSet()
+        val meant = parts.map { IntentParser.parse(it, ctx.nowMs, ctx.timeZone, known) }
+        if (meant.any { it is Understanding.Unclear || it is Understanding.Correct || it == Understanding.Undo }) return null
+        if (meant.all { it is Understanding.Ask }) return null
+        // A save that is only a plain note may really be the tail of the first request ("... and the bread"): keep it whole.
+        if (meant.withIndex().any { (i, it) -> it is Understanding.Save && it.kind == MemoryKind.NOTE && parts[i].split(' ').size < 4 }) return null
+        return Reply.Several(parts.zip(meant).map { (p, u) -> byRules(u, p, ctx) })
+    }
+
+    /** "What do I have today?": active reminders, for one day or all, soonest first. */
+    private fun agenda(dayOffset: Int?, ctx: AssistantContext): Reply {
+        val tz = ctx.timeZone
+        val today = Instant.fromEpochMilliseconds(ctx.nowMs).toLocalDateTime(tz).date
+        val range = dayOffset?.let { d ->
+            val day = today.plus(d, DateTimeUnit.DAY)
+            day.atStartOfDayIn(tz).toEpochMilliseconds() until day.plus(1, DateTimeUnit.DAY).atStartOfDayIn(tz).toEpochMilliseconds()
+        }
+        val items = core.reminders.active().mapNotNull { r ->
+            val at = r.snoozeUntil ?: r.fireAt
+            if (range != null && (at == null || at !in range)) return@mapNotNull null
+            val memory = core.memories.get(r.memoryId) ?: return@mapNotNull null
+            val description = when {
+                at != null -> Describe.time(Instant.fromEpochMilliseconds(at), r.rrule, ctx)
+                r.placeTarget != null -> "at a place"
+                r.btDevice != null -> "in the car"
+                else -> ""
+            }
+            AgendaItem(memory, r, description)
+        }
+        return Reply.Agenda(when (dayOffset) { 0 -> "today"; 1 -> "tomorrow"; else -> "coming up" }, items)
+    }
+
+    /**
+     * Saves what the user said after "I've got an idea" (it can be long). Stored as a note in the Ideas category,
+     * so it is found like any memory ("what was my idea about the shop?") and listed under Ideas.
+     */
+    fun saveIdea(text: String, ctx: AssistantContext): Reply {
+        val body = text.trim().ifEmpty { return Reply.NeedsClarification(text) }
+        val shown = body.replaceFirstChar { it.uppercase() }.let { if (Text.normalize(it).startsWith("idea")) it else "Idea: $it" }
+        val m = core.memories.save(NewMemory(body = shown, kind = MemoryKind.NOTE, source = ctx.source, rawTranscript = body.takeIf { ctx.source == Source.VOICE }))
+        val ideas = core.categories.bySlug("ideas") ?: core.categories.create("Ideas", "Ideas, plans and things to try")
+        core.categories.assign(m.id, ideas.id)
+        setLast(m.id)
+        return Reply.Saved(m)
     }
 
     /** Rules only, never the mind: used for the mind's own rewritten commands, so they can't loop. */
@@ -206,6 +270,8 @@ class Assistant(private val core: KataaCore) {
             is Understanding.SavePlace -> savePlace(raw, u, ctx)
             is Understanding.CreateCategory -> Reply.CategoryCreated(core.categories.create(u.name, u.description))
             is Understanding.BrowseCategory -> browse(u, ctx)
+            is Understanding.Agenda -> agenda(u.dayOffset, ctx)
+            Understanding.StartIdea -> Reply.ListeningForIdea
             is Understanding.Unclear -> Reply.NeedsClarification(raw)
         }
     }
@@ -402,18 +468,38 @@ class Assistant(private val core: KataaCore) {
                 return Reply.Answer(pick.answer.ifBlank { hit.memory.body }, hit.memory, emptyList(), result.hits)
             }
             if (pick != null) {
-                if (!ctx.privateUnlocked && core.search.search(u.query, SearchOptions(limit = 1, includePrivate = true)).confident) return Reply.NeedsUnlock(u.query)
+                if (!ctx.privateUnlocked && lockedAnswerExists(u)) return Reply.NeedsUnlock(u.query)
                 return Reply.NotFound(u.query)
             }
         }
         val top = result.hits.firstOrNull()
-        if (!result.confident || top == null) {
-            if (!ctx.privateUnlocked && core.search.search(u.query, SearchOptions(limit = 1, includePrivate = true)).confident) {
+        if (!result.confident || top == null || !aboutTheSameThing(u, top)) {
+            if (!ctx.privateUnlocked && lockedAnswerExists(u)) {
                 return Reply.NeedsUnlock(u.query)
             }
             return Reply.NotFound(u.query)
         }
         return Reply.Answer(shortAnswer(u.type, top.memory, ctx), top.memory, emptyList(), result.hits)
+    }
+
+    /**
+     * "What is my mom's birthday?" must not be answered with "Call mom": a general question names its thing
+     * last ("birthday"), and the answer has to mention it (or a word for it) unless the meaning is almost the same.
+     */
+    private fun aboutTheSameThing(u: Understanding.Ask, hit: SearchHit): Boolean {
+        if (u.type != QuestionType.GENERAL) return true
+        if ((hit.similarity ?: 0.0) >= SURE_SIMILARITY) return true
+        val head = app.kataa.core.search.FtsQuery.tokens(u.query).lastOrNull { it !in VAGUE_HEADS } ?: return true
+        val words = app.kataa.core.search.FtsQuery.tokens(hit.memory.body, maxTokens = 512)
+        val wanted = setOf(head) + (app.kataa.core.search.FtsQuery.SYNONYMS[head] ?: emptySet())
+        return words.any { w -> wanted.any { h -> w.startsWith(h.take(4)) || h.startsWith(w.take(4)) && w.length >= 4 || w == h } }
+    }
+
+    /** A Private memory would answer this (only asked when nothing visible did): worth asking for unlock. */
+    private fun lockedAnswerExists(u: Understanding.Ask): Boolean {
+        val r = core.search.search(u.query, SearchOptions(limit = 1, includePrivate = true))
+        val top = r.hits.firstOrNull() ?: return false
+        return r.confident && aboutTheSameThing(u, top)
     }
 
     /** Search can't decide alone: nothing confident, or the best two are nearly tied. */
@@ -503,8 +589,12 @@ class Assistant(private val core: KataaCore) {
     companion object {
         private const val LAST_KEY = "assistant_last_memory_id"
         private const val CORRECTION_WINDOW_MS = 30 * 60 * 1000L
+        private const val SURE_SIMILARITY = 0.80
+        private val VAGUE_HEADS = setOf("thing", "things", "stuff", "one", "again", "now", "today", "please", "number", "name")
         /** Second hit within 8% of the first: let the mind choose between them. */
         private const val NEAR_TIE = 0.92
+        /** Where a second request starts. The lookahead keeps "my"/"the"/"i" with the second part. */
+        private val SPLIT = Regex("\\s(?:and also|and then|and|also|plus)\\s(?=(?:my|the|our|i|remind|also)\\b)")
         private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
         private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
         private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")

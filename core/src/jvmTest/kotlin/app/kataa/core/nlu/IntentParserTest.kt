@@ -47,7 +47,8 @@ class IntentParserTest {
     @Test fun notesKeepUserWordsAndCase() {
         val u = parse("Remember that Ramesh's wifi password is Sunflower99")
         assertIs<Understanding.Save>(u)
-        assertEquals(MemoryKind.NOTE, u.kind)
+        // A password is a fact with one current value (a newer one replaces it), still in the user's own words.
+        assertEquals(MemoryKind.FACT, u.kind)
         assertEquals("Ramesh's wifi password is Sunflower99", u.body)
 
         val idea = parse("idea: an app that tells you where you parked")

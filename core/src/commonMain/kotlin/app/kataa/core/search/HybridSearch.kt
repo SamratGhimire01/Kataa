@@ -99,7 +99,10 @@ class HybridSearch(
     private fun keywordCoverage(queryTokens: List<String>, m: Memory): Double {
         if (queryTokens.isEmpty()) return 0.0
         val words = FtsQuery.tokens(m.body + " " + (m.extractedText ?: ""), maxTokens = 512)
-        val found = queryTokens.count { q -> words.any { w -> sameStem(q, w) } }
+        val found = queryTokens.count { q ->
+            val alike = listOf(q) + (FtsQuery.SYNONYMS[q] ?: emptySet())
+            words.any { w -> alike.any { sameStem(it, w) } }
+        }
         return found.toDouble() / queryTokens.size
     }
 
