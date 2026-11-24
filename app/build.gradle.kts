@@ -66,7 +66,9 @@ android {
     androidResources { noCompress += listOf("onnx") }
     // The on-device AI model (scripts/fetch-llm-model.sh), packaged as an uncompressed, 16 KB aligned
     // "native library" so it can be memory-mapped straight from the APK. Not an ELF file: never strip it.
-    sourceSets["main"].jniLibs.directories += rootProject.layout.projectDirectory.dir("mind/jni").asFile.path
+    // -Pkataa.noMind=true builds the small APK; the AI is then added in Settings from two downloaded files.
+    if (providers.gradleProperty("kataa.noMind").orNull != "true")
+        sourceSets["main"].jniLibs.directories += rootProject.layout.projectDirectory.dir("mind/jni").asFile.path
     packaging { jniLibs { keepDebugSymbols += "**/libkataa_mind.so" } }
 
     testOptions { unitTests.isIncludeAndroidResources = true }

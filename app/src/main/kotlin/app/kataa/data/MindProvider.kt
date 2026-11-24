@@ -15,7 +15,7 @@ import java.util.concurrent.Executors
  * freed when Android is short of memory, then reloaded the next time the app opens.
  */
 class MindProvider(private val context: Context, private val onReady: (Mind?) -> Unit) {
-    enum class Status { OFF, UNSUPPORTED, LOADING, READY, FAILED }
+    enum class Status { OFF, UNSUPPORTED, MISSING, LOADING, READY, FAILED }
 
     @Volatile var status: Status = Status.OFF
         private set
@@ -35,6 +35,7 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
     fun load() {
         if (status == Status.LOADING || status == Status.READY) return
         if (unsupportedReason() != null) { status = Status.UNSUPPORTED; onReady(null); return }
+        if (!installed()) { status = Status.MISSING; onReady(null); return }
         status = Status.LOADING
         thread.execute {
             val m = runCatching { open() }.onFailure { android.util.Log.e("Kataa", "mind failed to load", it) }.getOrNull()
@@ -44,6 +45,41 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
             runCatching { mind.warmUp() }
             status = Status.READY
             onReady(mind)
+        }
+    }
+
+    /** The AI is either inside the APK (the big build) or was added from files (the small build). */
+    fun installed(): Boolean = imported.length() == MODEL_SIZE || File(context.applicationInfo.nativeLibraryDir, MODEL_LIB).exists() ||
+        runCatching { context.assets.openNonAssetFd("lib/${Build.SUPPORTED_ABIS.first()}/$MODEL_LIB").use { true } }.getOrDefault(false)
+
+    private val imported get() = File(context.noBackupFilesDir, "kataa-mind.gguf")
+
+    /**
+     * Adds the AI from the downloaded piece files (Kataa-AI-part1.bin, part2.bin, in name order). Joins them,
+     * checks the result is exactly Kataa's model (size and SHA-256), then loads it. Runs on the mind thread;
+     * [done] gets null on success or a short reason.
+     */
+    fun importParts(parts: List<Pair<String, () -> java.io.InputStream>>, done: (String?) -> Unit) {
+        thread.execute {
+            val tmp = File(context.noBackupFilesDir, "kataa-mind.gguf.part")
+            val error = runCatching {
+                val md = java.security.MessageDigest.getInstance("SHA-256")
+                tmp.outputStream().buffered(1 shl 20).use { out ->
+                    for ((_, open) in parts.sortedBy { it.first.lowercase() }) open().use { inp ->
+                        val buf = ByteArray(1 shl 20)
+                        while (true) { val n = inp.read(buf); if (n < 0) break; md.update(buf, 0, n); out.write(buf, 0, n) }
+                    }
+                }
+                val sha = md.digest().joinToString("") { "%02x".format(it) }
+                when {
+                    tmp.length() != MODEL_SIZE -> "Those files are not the whole AI. Pick both pieces (part1 and part2)."
+                    sha != MODEL_SHA256 -> "Those files don't match Kataa's AI. Download both pieces again."
+                    else -> { imported.delete(); if (tmp.renameTo(imported)) null else "Couldn't save the AI on this phone." }
+                }
+            }.getOrElse { "Couldn't read the files: ${it.message}" }
+            tmp.delete()
+            if (error == null) { status = Status.OFF; load() }
+            done(error)
         }
     }
 
@@ -58,6 +94,9 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
     private fun open(): LlamaModel? {
         LlamaNative.load()
         val threads = threads()
+        val fastNow = totalRamGb() >= 3.5
+        // Added from files (the small build): load it by path.
+        if (imported.length() == MODEL_SIZE) return LlamaModel.open(imported.path, threads, CONTEXT, fastNow)
         // Repacked weights are 2-3x faster (tested on ARM); they use ~1 GB of RAM, which Android takes back via onTrimMemory.
         val fast = totalRamGb() >= 3.5
         // Installed as a file (older-style packaging): load it by path.
@@ -100,5 +139,8 @@ class MindProvider(private val context: Context, private val onReady: (Mind?) ->
     companion object {
         private const val MODEL_LIB = "libkataa_mind.so"
         private const val CONTEXT = 2048
+        /** scripts/fetch-llm-model.sh builds exactly this file. */
+        const val MODEL_SIZE = 975_065_632L
+        const val MODEL_SHA256 = "e15d020b0cfd1f9d59e679cb9f3fa221ffad79f7b359a13146deaa8d7ddb9a13"
     }
 }

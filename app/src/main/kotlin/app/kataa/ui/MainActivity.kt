@@ -133,6 +133,18 @@ class MainActivity : ComponentActivity() {
         if (text != null) session.type(text)
     }
     private val reminderPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { askReminderPermissions(next = true) }
+    private var onMindAdded: ((String?) -> Unit)? = null
+    private val pickMindParts = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@registerForActivityResult
+        val parts = uris.map { uri ->
+            val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: uri.toString()
+            name to { contentResolver.openInputStream(uri) ?: throw java.io.IOException("can't open $name") }
+        }
+        Look.setSmartMode(this, true)
+        onMindAdded?.invoke("Adding the AI… this takes about a minute.")
+        app.mind.importParts(parts) { err -> main.post { onMindAdded?.invoke(err ?: "Added. Starting the AI…") } }
+    }
     private val takePhoto = registerForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val m = snapFor ?: return@registerForActivityResult
         snapFor = null
@@ -891,6 +903,7 @@ class MainActivity : ComponentActivity() {
             mindNow.unsupportedReason() != null -> "Not available: ${mindNow.unsupportedReason()}."
             mindNow.status == MindProvider.Status.READY -> "On. The AI on your phone handles long or unclear sentences and picks the best answer. Nothing leaves your phone."
             mindNow.status == MindProvider.Status.FAILED -> "Couldn't start the AI on this phone."
+            mindNow.status == MindProvider.Status.MISSING || !mindNow.installed() -> "This is the small build without the AI. Download the two AI pieces (Kataa-AI-part1.bin and part2.bin), then tap \"Add AI from files\" and pick both."
             else -> "Starting the AI…"
         }
         mindDetail.text = mindText()
@@ -908,6 +921,12 @@ class MainActivity : ComponentActivity() {
             })
         }, LinearLayout.LayoutParams(-1, ui.dpi(52f)))
         list.addView(mindDetail, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dpi(8f) })
+        if (!mindNow.installed() && mindNow.unsupportedReason() == null) {
+            onMindAdded = { mindDetail.text = it ?: mindText() }
+            list.addView(settingsRow("Add AI from files", "Pick both pieces: Kataa-AI-part1.bin and Kataa-AI-part2.bin") {
+                pickMindParts.launch(arrayOf("*/*"))
+            })
+        }
         if (mindNow.status == MindProvider.Status.LOADING) main.postDelayed({ if (scene == Scene.SETTINGS) mindDetail.text = mindText() }, 4000)
         sectionTitle("Reminders")
         list.addView(settingsRow("Allow reminders", "Notifications, location for store reminders, exact alarms, car Bluetooth") { askReminderPermissions(next = false) })
