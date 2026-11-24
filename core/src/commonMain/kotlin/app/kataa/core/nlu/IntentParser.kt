@@ -104,6 +104,10 @@ object IntentParser {
     /** "save my instagram password samrat@123", "write wifi password as abc". */
     private val PW_SAVE = Regex("^(?:please )?(?:write|save|note|store|remember|keep|add|put)(?: down)?(?: that)?(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: is| as| =)? (\\S.*)$")
     /** "netflix password is nf2026" without "my". */
+    /** "not working", "too long", "the same as before": said about a password, never the password itself. */
+    private val COMPLAINT = Regex("(?:not \\w+(?: \\w+)?|wrong|incorrect|invalid|expired|expiring(?: \\w+){0,2}|changed|changing|reset|too \\w+|very \\w+|so \\w+|really \\w+|case sensitive|(?:the )?same(?: as \\w+(?: \\w+)?)?|weak|strong|long|short|forgotten|lost|locked|blocked|working|correct|right|different|difficult|complicated|hard to \\w+|easy to \\w+|tricky|stupid|annoying|useless|broken|saved|stored|secret|private|hidden|written down|somewhere)")
+    /** "my netflix password is changed to moonlight", "my gmail password changed to tiger", "... is now Moonlight22". */
+    private val PW_CHANGED = Regex("^(?:my |the |our )?(.+?) (?:password|passcode|pin|pin code) (?:is |was |has been |got )?(?:changed|updated|reset|now changed) (?:to|into|as) (.+)$|^(?:my |the |our )?(.+?) (?:password|passcode|pin|pin code) is now (.+)$")
     /** "wifi password at home is blue sky 7" -> ("wifi at home", "blue sky 7"). */
     private val PW_AT = Regex("^(?:my |the |our )?((?:[a-z0-9'-]+ )?[a-z0-9'-]+) (?:password|passcode|pin|pin code) ((?:at|in|for) (?:my |the |our )?[a-z0-9'-]+(?: [a-z0-9'-]+)?) (?:is|=) (.+)$")
     private val PW_BARE = Regex("^(?:the |our )?((?:[a-z0-9'-]+ ){0,2}?[a-z0-9'-]+) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
@@ -238,7 +242,7 @@ object IntentParser {
     /** Every way of saying a password: one current value per service, so a new one replaces the old. */
     private fun password(text: String, raw: String): Understanding.Save? {
         if (Text.isQuestionMarked(raw) || TRAILING_WHAT.containsMatchIn(text)) return null
-        val (service, value) = PW_CHANGE.find(text)?.let { m ->
+        val (service, value) = (PW_CHANGED.find(text) ?: PW_CHANGE.find(text))?.let { m ->
             if (m.groupValues[1].isNotEmpty()) m.groupValues[1] to m.groupValues[2] else m.groupValues[3] to m.groupValues[4]
         } ?: PW_FOR_IS.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
             ?: PW_OF.find(text)?.let { m ->
@@ -266,7 +270,7 @@ object IntentParser {
         // "the wifi password is written on the router", "... is on the fridge": where it is, not what it is.
         if (!typed && Regex("^(?:(?:written|stuck|kept|saved|stored|pasted|taped|hidden|noted)(?: down| up)? (?:on|in|at|under|inside|behind|near|by|with|somewhere)|(?:on|in|at|under|inside|behind|near|with|beside|next to|by) [a-z]+|somewhere)\\b").containsMatchIn(v)) return null
         // "my wifi password is not working", "... is wrong", "... is too long": about the password, not the password.
-        if (!typed && Regex("^(?:not|wrong|incorrect|invalid|expired|expiring|changed|changing|too|very|so|really|still|case|the same|same|weak|strong|long|short|hard|easy|forgotten|lost|locked|blocked|working|correct|right|different|difficult|complicated|simple|easy to|tricky|stupid|annoying|useless|broken)\\b").containsMatchIn(v)) return null
+        if (!typed && COMPLAINT.matches(v)) return null
         if (Regex("^(?:to |about )").containsMatchIn(svc)) return null
         if (!statement) {
             // "remember to change the wifi password tomorrow" is a reminder; "write down the password for the locker in
@@ -325,7 +329,7 @@ object IntentParser {
             "(?:keep reminding me|remind me|remind|nag me|alert me|notify me|ping me|nudge me|remember|do not forget|do not let me forget|make sure i|make sure|note)?" +
             "(?: to| that| about)?\\s*(?:i |we )?(?:have to|need to|must|should|got to|gotta|ought to|will)?\\s*(?:to )?",
     )
-    private val REMINDER_TAIL = Regex("\\s*(?:please|for me|okay|ok|thanks|thank you|until i do it|it is important|important)$")
+    private val REMINDER_TAIL = Regex("\\s+(?:please|for me|okay|ok|thanks|thank you|until i do it|it is important|important)$")
 
     /** Puts back capitalization the user typed ("big mart" -> "Big Mart" if they wrote it that way). */
     private fun restoreCase(lower: String, raw: String): String {

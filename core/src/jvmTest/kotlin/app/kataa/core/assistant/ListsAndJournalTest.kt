@@ -321,6 +321,41 @@ class ListsAndJournalTest {
         for (s in listOf("when is mother's day", "what is valentine's day")) assertNull(assertIs<Reply.NotFound>(say(s), s).askFor, s)
     }
 
+    /** Fifth bug-hunt pass. */
+    @Test fun reviewFindingsPass5() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun body(r: Reply) = core.memories.get(set(r).memoryId)!!.body.trimEnd('.')
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        // 1: words ending in "ok" are kept.
+        assertEquals("Read my book", body(say("remind me to read my book at 6 pm")))
+        assertEquals("Post on facebook", body(say("remind me at 5 pm to post on facebook")))
+        // 2: a repeating wake-up keeps the morning; a plain repeating bare hour asks.
+        val wake = set(say("wake me up at 5 every day"))
+        assertEquals("FREQ=DAILY", wake.rrule); assertTrue(local(wake.fireAt!!).endsWith("T05:00"), local(wake.fireAt!!))
+        val p = assertIs<Reply.PickTime>(say("remind me every day at 6 to drink water"))
+        val chosen = set(core.assistant.pickTimeOption(p, p.options.first { local(it.atMs).endsWith("T06:00") }, ctx()))
+        assertEquals("FREQ=DAILY", chosen.rrule)
+        // 3: a day of the month.
+        val bill = assertIs<Reply.ReminderSet>(say("remind me to pay the electricity bill on the 5th of every month"))
+        assertEquals("Pay the electricity bill", body(bill)); assertEquals("FREQ=MONTHLY", set(bill).rrule)
+        assertTrue(local(set(bill).fireAt!!).startsWith("2026-12-05"), local(set(bill).fireAt!!))
+        // 4: several days; every year.
+        val yoga = assertIs<Reply.ReminderSet>(say("remind me every tuesday and thursday at 5 pm to go to yoga"))
+        assertEquals("FREQ=WEEKLY;BYDAY=TU,TH", set(yoga).rrule); assertEquals("Go to yoga", body(yoga))
+        val ram = assertIs<Reply.ReminderSet>(say("remind me every year on march 3 to wish ram"))
+        assertEquals("FREQ=YEARLY", set(ram).rrule); assertEquals("Wish ram", body(ram))
+        // 5, 6: a changed password and real passphrases.
+        assertEquals("moonlight", assertIs<Reply.ConfirmSecret>(say("my netflix password is changed to moonlight")).value)
+        assertEquals("Moonlight22", assertIs<Reply.ConfirmSecret>(say("my wifi password is now Moonlight22")).value)
+        for (v in listOf("easy peasy", "correct horse battery staple", "still waters", "lost in space")) {
+            assertEquals(v, assertIs<Reply.ConfirmSecret>(say("my instagram password is $v")).value)
+        }
+        assertTrue(say("my wifi password is too long") !is Reply.ConfirmSecret)
+        // 7: "on"/"in" inside an item.
+        assertEquals(listOf("Work on the report", "Start the project"), list(say("add work on the report and start the project to my to do list")).items.map { it.body })
+        assertEquals("Go to the bank", list(say("add go to the bank to my list")).items.single().body)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()

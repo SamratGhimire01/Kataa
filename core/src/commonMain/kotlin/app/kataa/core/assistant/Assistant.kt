@@ -101,7 +101,7 @@ sealed interface Reply {
      * "Call Didi at 7:13": the reminder is saved but not scheduled until the user picks one of [options]
      * (the best guess first), by tapping or saying "PM", "morning", "tomorrow"... -> [Assistant.followUp].
      */
-    data class PickTime(val memory: Memory, val options: List<TimeOption>, internal val persistent: Boolean) : Reply
+    data class PickTime(val memory: Memory, val options: List<TimeOption>, internal val persistent: Boolean, internal val rrule: String? = null) : Reply
     /** The user said no to saving: nothing was stored. */
     data object NotSaved : Reply
     /** "What do I have today?": the reminders for [label] ("today", "tomorrow", "coming up"), soonest first. */
@@ -206,7 +206,7 @@ class Assistant(private val core: KataaCore) {
             return schedule(memory, t.copy(fireAt = other, alternative = null), null, u.persistent, ctx)
         }
         val options = listOf(t.fireAt, other).map { TimeOption(it.toEpochMilliseconds(), Describe.time(it, null, ctx)) }
-        return Reply.PickTime(memory, options, u.persistent)
+        return Reply.PickTime(memory, options, u.persistent, t.rrule)
     }
 
     /** "What do I have today?": active reminders, for one day or all, soonest first. */
@@ -545,7 +545,7 @@ class Assistant(private val core: KataaCore) {
     /** The user tapped or said one of the times of a [Reply.PickTime]. */
     fun pickTimeOption(p: Reply.PickTime, option: TimeOption, ctx: AssistantContext): Reply {
         val at = Instant.fromEpochMilliseconds(option.atMs)
-        val t = app.kataa.core.nlu.TimeMatch(at, null, 0..0, timeWasDefaulted = false)
+        val t = app.kataa.core.nlu.TimeMatch(at, p.rrule, 0..0, timeWasDefaulted = false)
         return schedule(p.memory, t, null, p.persistent, ctx)
     }
 

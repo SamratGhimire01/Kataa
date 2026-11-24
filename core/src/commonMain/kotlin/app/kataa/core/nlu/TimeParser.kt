@@ -67,6 +67,11 @@ object TimeParser {
     private val RELATIVE = Regex("\\b(?:in|after|within) (?:(?:a )?$NUM\\s*(?:of )?)?(minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)(?: (?:from now|later|time))?\\b|\\b$NUM (minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?) (?:from now|later|from today)\\b")
     private val PART_ALONE = Regex("\\b(?:in the|this) (morning|afternoon|evening)\\b|\\bat night\\b|\\b(after lunch|after breakfast|after dinner|before bed|bedtime|(?:at|before|during) (?:lunch|breakfast|dinner))\\b")
     private val HALF_HOUR = Regex("\\bin (?:half an hour|half hour|30 min(?:ute)?s?)\\b")
+    /** "every tuesday and thursday", "every mon, wed and fri". */
+    private val MULTI_DAYS = Regex("\\b(?:every|each) $DAYNAME((?:(?:,| and|, and|,and) $DAYNAME)+)\\b")
+    private val YEARLY = Regex("\\b(?:every|each) year\\b|\\b(?:yearly|annually|every birthday)\\b")
+    /** "on the 5th", "the 1st of" (with "every month"). */
+    private val MONTHDAY = Regex("\\b(?:on )?the (\\d{1,2})(?:st|nd|rd|th)?(?: day)?(?: of)?(?= every month| each month|\\b)")
     private val RECURRING = Regex("\\b(?:every|each) (day|morning|afternoon|evening|night|week|month|weekday|weekdays|$DAYNAME)\\b|\\b(daily|weekly|monthly|on weekdays)\\b")
     private val AT_CLOCK = Regex("\\b(?:at|by|around) $CLOCK\\b|\\b(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm)\\b|\\b(?:at|by|around) (noon|midnight|lunch)\\b|\\b(\\d{1,2}):(\\d{2})\\b")
     private val DAY_WORD = Regex("\\b(day after tomorrow|tomorrow|today|tonight|this (?:morning|afternoon|evening)|next week|this weekend|next weekend)(?: (morning|afternoon|evening|night))?\\b")
@@ -125,14 +130,37 @@ object TimeParser {
         var rrule: String? = null
         var date: LocalDate? = null
         var partHour: Int? = null
-        RECURRING.find(text)?.let { m ->
+        MULTI_DAYS.find(text)?.let { m ->
+            val names = listOf(m.groupValues[1]) + Regex(DAYNAME).findAll(m.groupValues[2]).map { it.value }.toList()
+            val days = names.mapNotNull { DAYS[it] }.distinct().sortedBy { it.isoDayNumber }
+            if (days.size >= 2) {
+                spans += m.range
+                rrule = "FREQ=WEEKLY;BYDAY=" + days.joinToString(",") { BYDAY.getValue(it) }
+                date = nextMatching(local.date, includeToday = true) { it.dayOfWeek in days }
+            }
+        }
+        if (rrule == null) YEARLY.find(text)?.let { m -> spans += m.range; rrule = "FREQ=YEARLY" }
+        if (rrule == null) RECURRING.find(text)?.let { m ->
             spans += m.range
             val what = m.groupValues[1].ifEmpty { m.groupValues[3] }
             when (what) {
                 "day", "daily" -> rrule = "FREQ=DAILY"
                 "morning", "afternoon", "evening", "night" -> { rrule = "FREQ=DAILY"; partHour = PARTS[what] }
                 "week", "weekly" -> rrule = "FREQ=WEEKLY;BYDAY=${BYDAY[local.dayOfWeek]}"
-                "month", "monthly" -> rrule = "FREQ=MONTHLY"
+                "month", "monthly" -> {
+                    rrule = "FREQ=MONTHLY"
+                    // "on the 5th of every month": that day of each month.
+                    MONTHDAY.find(text)?.let { d ->
+                        val n = d.groupValues[1].toInt()
+                        if (n in 1..31) {
+                            spans += d.range
+                            var y = local.date.year; var mo = local.date.month.number
+                            if (n < local.date.day) { mo += 1; if (mo > 12) { mo = 1; y += 1 } }
+                            date = runCatching { LocalDate(y, mo, n) }.getOrNull()
+                                ?: runCatching { LocalDate(y, mo, 1).plus(1, DateTimeUnit.MONTH).minus(1, DateTimeUnit.DAY) }.getOrNull()
+                        }
+                    }
+                }
                 "weekday", "weekdays", "on weekdays" -> {
                     rrule = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
                     date = nextMatching(local.date, includeToday = true) { it.dayOfWeek.isoDayNumber <= 5 }
@@ -163,7 +191,7 @@ object TimeParser {
                 if (part != null) partHour = PARTS[part]
             }
         }
-        if (rrule == null && date == null) {
+        if ((rrule == null || rrule == "FREQ=YEARLY") && date == null) {
             dateFrom(text, local.date)?.let { (d, r) -> date = d; spans += r }
         }
         if (rrule == null && date == null) {
@@ -218,7 +246,7 @@ object TimeParser {
         }
         val range = spans.minOf { it.first }..spans.maxOf { it.last }
         var other: Instant? = null
-        if (halfGuessed && partHour == null && rrule == null) {
+        if (halfGuessed && partHour == null) {
             var alt = LocalDateTime(at.date, otherHalf(at.time))
             if (date == null && alt <= local) alt = LocalDateTime(alt.date.plus(1, DateTimeUnit.DAY), alt.time)
             if (date == null && alt.date > local.date.plus(1, DateTimeUnit.DAY)) alt = LocalDateTime(alt.date.minus(1, DateTimeUnit.DAY), alt.time)

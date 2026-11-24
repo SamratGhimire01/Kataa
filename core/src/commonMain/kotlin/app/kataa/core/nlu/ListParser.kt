@@ -23,7 +23,7 @@ object ListParser {
     private val NOT_ITEMS = Regex("^(?:is|are|was|were) (?:on|in|at|under|inside|behind|near|with|by|kept|stored|written|saved|full|long|empty|too|very|so|not|getting|piling|done|finished|over|lost|missing|gone)\\b|^(?:of|about|that|which|for|from|with|i|we|you|it)\\b|^(?:is|are) [a-z]+(?:ing|ed)\\b")
     private val OWNER = Regex("^(?:(?:my|the|a|an|our|new|this)(?: |$))+")
 
-    private val ADD = Regex("^(?:please )?(?:can you |could you )?(?:also )?(?:add|put|include|append|write|note|jot)(?: down)? (.+?) (?:to|on|in|into|onto) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
+    private val ADD = Regex("^(?:please )?(?:can you |could you )?(?:also )?(?:add|put|include|append|write|note|jot)(?: down)? (.+) (?:to|on|in|into|onto) (?:my |the |our )?(?!do\\b|-do\\b)((?:[a-z0-9']+ ){0,3}?)$TD\\b(.*)$")
     private val REMOVE = Regex("^(?:please )?(?:remove|delete|take off|cross out|drop|erase) (.+?) (?:from|off|on|in) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
 
     private val COUNT = Regex("^how many (?:of my )?(?:tasks|things|items|to-?dos|to dos|todos|goals|jobs)\\b.*$")
