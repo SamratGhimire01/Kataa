@@ -118,6 +118,8 @@ sealed interface Reply {
     data object ListeningForJournal : Reply
     /** One day of the journal: summary, entries, and the tasks finished that day. [saved] is the entry just added. */
     data class JournalShown(val day: JournalDay, val label: String, val tasksDone: List<ListItem>, val saved: Memory? = null) : Reply
+    /** "Show me everything": the app opens the timeline (every memory, list and journal day, by date). */
+    data object Timeline : Reply
     /** "ok thanks", "hello": nothing to save or search. [said] is the normalized text. */
     data class SmallTalk(val said: String) : Reply
 }
@@ -342,6 +344,7 @@ class Assistant(private val core: KataaCore) {
             is Understanding.RemoveFromList -> removeFromList(u, ctx) ?: byRules(reparseWithoutLists(raw, ctx), raw, ctx)
             is Understanding.Journal -> if (u.text != null) saveJournal(u.text, ctx) else Reply.ListeningForJournal
             is Understanding.ShowJournal -> showJournal(u.day, ctx)
+            Understanding.Timeline -> Reply.Timeline
             is Understanding.Unclear -> Reply.NeedsClarification(raw)
         }
     }

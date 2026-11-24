@@ -52,6 +52,7 @@ object ReplyText {
         is Reply.TaskListReply -> list(r)
         Reply.ListeningForJournal -> "I'm listening. Tell me about your day, take your time."
         is Reply.JournalShown -> journal(r)
+        Reply.Timeline -> "Here's everything, newest first."
     }
 
     private fun agenda(r: Reply.Agenda): String {

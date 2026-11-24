@@ -41,6 +41,10 @@ import app.kataa.R
 import app.kataa.core.assistant.Describe
 import app.kataa.core.assistant.Reply
 import app.kataa.core.assistant.ReplyText
+import app.kataa.core.lists.ListItem
+import app.kataa.core.lists.ListKey
+import app.kataa.core.memory.Secrets
+import app.kataa.core.model.MemoryEdit
 import app.kataa.core.model.Category
 import app.kataa.core.model.Memory
 import app.kataa.core.model.MemoryKind
@@ -68,7 +72,7 @@ import kotlin.time.Instant
  * It reads the same [KataaState] stream as every other entry point.
  */
 class MainActivity : ComponentActivity() {
-    private enum class Scene { HOME, TALK, ANSWER, MEMORIES, REMINDERS, CATEGORY, SETTINGS }
+    private enum class Scene { HOME, TALK, ANSWER, MEMORIES, REMINDERS, CATEGORY, SETTINGS, LIST, JOURNAL, TIMELINE }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val main = Handler(Looper.getMainLooper())
@@ -111,6 +115,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var metaText: TextView
     private lateinit var saveIt: LinearLayout
     private var notFoundText: String? = null
+    /** The button under an answer: "Save it instead" after not found, "Copy password" for a password. */
+    private var saveAction: (() -> Unit)? = null
+    private lateinit var copyLabel: TextView
+    /** A card Kataa is showing (password check, AM or PM); closed when the next reply arrives. */
+    private var openDialog: android.app.Dialog? = null
+    /** The list on screen, so tick boxes and "add" go to it. */
+    private var shownListKey: String? = null
 
     private var scene = Scene.HOME
     private var lastState: KataaState? = null
@@ -300,12 +311,10 @@ class MainActivity : ComponentActivity() {
         saveIt = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             background = ui.glass(); setPadding(ui.dpi(20f), ui.dpi(12f), ui.dpi(20f), ui.dpi(12f))
-            addView(ui.text(15.5f, 700).apply { text = "Save it instead" })
+            copyLabel = ui.text(15.5f, 700).apply { text = "Save it instead" }
+            addView(copyLabel)
             visibility = View.GONE
-            setOnClickListener {
-                val t = notFoundText ?: return@setOnClickListener
-                main.removeCallbacks(autoClose); visibility = View.GONE; session.saveInstead(t)
-            }
+            setOnClickListener { main.removeCallbacks(autoClose); saveAction?.invoke() }
         }
         ui.pressable(saveIt)
         answer.add(saveIt, FracLayout.Spec(0.84f, 0.9f, wrap = true))
@@ -339,7 +348,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { startTalking() }
             elevation = ui.dp(6f)
         }
-        ui.pressable(mic)
+        holdToTalk(mic)
         val remBtn = dockIcon(R.drawable.ic_bell, "Reminders") { openReminders() }
         dock.addView(memBtn, LinearLayout.LayoutParams(ui.dpi(48f), ui.dpi(48f)))
         dock.addView(mic, LinearLayout.LayoutParams(ui.dpi(60f), ui.dpi(60f)).apply { marginStart = ui.dpi(22f); marginEnd = ui.dpi(22f) })
@@ -407,7 +416,37 @@ class MainActivity : ComponentActivity() {
         hideTypeBar()
         speaker.stop()
         main.removeCallbacks(autoClose)
-        session.tapToTalk()
+        session.tapToTalk(keepListening = Look.micMode(this) == "tap")
+    }
+
+    /** Hold-to-talk on the mic button: in "hold" mode, and a long press in any mode. */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun holdToTalk(v: View) {
+        var holding = false
+        val longPress = Runnable {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@Runnable
+            holding = true; hideTypeBar(); speaker.stop(); main.removeCallbacks(autoClose)
+            v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            session.holdStart()
+        }
+        v.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(120).setInterpolator(Motion.standard).start()
+                    holding = false
+                    main.postDelayed(longPress, if (Look.micMode(this) == "hold") 0L else 450L)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(Motion.spring).start()
+                    main.removeCallbacks(longPress)
+                    if (holding) { holding = false; session.holdEnd(); return@setOnTouchListener true }
+                    if (e.actionMasked == android.view.MotionEvent.ACTION_UP && Look.micMode(this) != "hold") v.performClick()
+                    else if (Look.micMode(this) == "hold" && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+            true
+        }
     }
 
     private fun showTypeBar() {
@@ -473,7 +512,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showReply(heard: String, r: Reply, speak: Boolean = true) {
-        if (speak && Look.speakReplies(this)) speaker.say(ReplyText.of(r))
+        if (speak && Look.speakReplies(this)) speaker.say(ReplyText.spoken(r))
+        openDialog?.dismiss(); openDialog = null
         when (r) {
             is Reply.Answer -> showAnswer(heard, r.memory, r.shortAnswer)
             is Reply.DidIAnswer -> showDidI(heard, r)
@@ -510,7 +550,19 @@ class MainActivity : ComponentActivity() {
                 @Suppress("DEPRECATION")
                 km.createConfirmDeviceCredentialIntent("Unlock Private", "To show this answer")?.let { pendingUnlockQuery = r.query; unlock.launch(it) }
             }
-            is Reply.NotFound -> showNotFound(heard)
+            is Reply.NotFound -> if (r.askFor != null) askForFact(r) else showNotFound(heard)
+            is Reply.ConfirmSecret -> confirmSecretCard(r)
+            is Reply.PickTime -> pickTimeCard(r)
+            Reply.NotSaved -> showMessage(ReplyText.of(r))
+            is Reply.Agenda -> { session.dismiss(); openReminders(r.label.takeIf { it != "coming up" }) }
+            is Reply.TaskListReply -> { session.dismiss(); openList(r.list.key, ReplyText.of(r)) }
+            Reply.ListeningForIdea, Reply.ListeningForJournal, is Reply.ListeningForList -> {
+                // Long dictation: listen again right after the prompt, and pauses don't end it.
+                showMessage(ReplyText.of(r), keepOpen = true)
+                main.postDelayed({ if (lastState is KataaState.Done && scene == Scene.TALK) session.listenLong() }, if (Look.speakReplies(this)) 2600L else 700L)
+            }
+            is Reply.JournalShown -> { session.dismiss(); openJournal(r.day.day) }
+            Reply.Timeline -> { session.dismiss(); openTimeline() }
             is Reply.SmallTalk -> showMessage(ReplyText.of(r))
             Reply.NeedsLocation -> {
                 val granted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -564,6 +616,14 @@ class MainActivity : ComponentActivity() {
         prepareAnswer(heard)
         bigText.text = short
         metaText.text = "Saved ${relative(memory.createdAt)}"
+        // A password shown after unlock: one tap copies it (marked sensitive, cleared after 30 seconds).
+        val secret = Secrets.takeIf { it.looksSecret(memory) }?.value(memory.body)
+        if (secret != null) {
+            copyLabel.text = "Copy password"
+            saveIt.visibility = View.VISIBLE; saveIt.alpha = 0f
+            saveIt.animate().alpha(1f).setStartDelay(700).setDuration(500).start()
+            saveAction = { copySecret(Secrets.service(memory.body) ?: "Password", secret) }
+        }
         app.cores.worker.execute {
             val slugs = runCatching { app.cores.core.categories.assignmentsFor(memory.id).map { it.slug } }.getOrDefault(emptyList())
             val photo = Spots.load(this, memory.uuid, resources.displayMetrics.widthPixels)
@@ -584,6 +644,8 @@ class MainActivity : ComponentActivity() {
         metaText.text = "Tell me when you put it somewhere, and I'll remember"
         setObject(null, ObjectIcons.notFound)
         notFoundText = heard
+        copyLabel.text = "Save it instead"
+        saveAction = { saveIt.visibility = View.GONE; session.saveInstead(heard) }
         saveIt.visibility = View.VISIBLE; saveIt.alpha = 0f; saveIt.translationY = ui.dp(10f)
         saveIt.animate().alpha(1f).translationY(0f).setStartDelay(900).setDuration(600).setInterpolator(Motion.spring).start()
     }
@@ -594,7 +656,7 @@ class MainActivity : ComponentActivity() {
         q.append("“").append(heard).append("”")
         q.setSpan(ForegroundColorSpan(look.fg), startQ, q.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         asked.text = q
-        saveIt.visibility = View.GONE; notFoundText = null
+        saveIt.visibility = View.GONE; notFoundText = null; saveAction = null
         objView.setImageDrawable(null)
         go(Scene.ANSWER)
         main.postDelayed(autoClose, 14_000)
@@ -719,6 +781,18 @@ class MainActivity : ComponentActivity() {
             }, LinearLayout.LayoutParams(ui.dpi(40f), ui.dpi(40f)))
         }
         list.addView(search, LinearLayout.LayoutParams(-1, ui.dpi(54f)).apply { topMargin = ui.dpi(18f) })
+        // Quick ways in: the journal, everything by date, and the lists.
+        list.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            for ((label, go) in listOf<Pair<String, () -> Unit>>(
+                "Journal" to { openJournal(kDate(java.time.LocalDate.now())) },
+                "Everything" to { openTimeline() },
+                "Lists" to { openReminders() },
+            )) addView(ui.text(14.5f, 700, look.fg, Gravity.CENTER).apply {
+                text = label; background = ui.glass(); setPadding(ui.dpi(16f), ui.dpi(10f), ui.dpi(16f), ui.dpi(10f))
+                setOnClickListener { go() }; ui.pressable(this)
+            }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dpi(8f) })
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(14f) })
         val shelves = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         list.addView(shelves)
         val recent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -727,7 +801,9 @@ class MainActivity : ComponentActivity() {
         app.cores.worker.execute {
             val c = app.cores.core
             val cats = runCatching { c.categories.list().filter { it.memoryCount > 0 }.sortedByDescending { it.memoryCount } }.getOrDefault(emptyList())
-            val mem = runCatching { c.memories.recent(30) }.getOrDefault(emptyList())
+            val journalIds = runCatching { c.memories.recent(30).filter { c.journal.isJournal(it.id) }.map { it.id }.toSet() }.getOrDefault(emptySet())
+            val mem = runCatching { c.memories.recent(30).filter { it.id !in journalIds } }.getOrDefault(emptyList())
+            val priv = runCatching { c.memories.privateIds(mem.map { it.id }) }.getOrDefault(emptySet())
             val total = runCatching { c.memories.countLive() }.getOrDefault(0L)
             runOnUiThread {
                 if (scene != Scene.MEMORIES) return@runOnUiThread
@@ -740,7 +816,7 @@ class MainActivity : ComponentActivity() {
                 }
                 var n = 0
                 cats.chunked(3).forEach { row -> shelves.addView(shelf(row, n)); n += row.size }
-                addMemoryRows(recent, mem)
+                addMemoryRows(recent, mem, if (app.privateUnlocked) emptySet() else priv)
             }
         }
     }
@@ -793,12 +869,12 @@ class MainActivity : ComponentActivity() {
         return box
     }
 
-    private fun addMemoryRows(into: LinearLayout, mem: List<Memory>) {
+    private fun addMemoryRows(into: LinearLayout, mem: List<Memory>, locked: Set<Long> = emptySet()) {
         val startOfDay = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0) }.timeInMillis
         val (today, earlier) = mem.partition { it.createdAt >= startOfDay }
         var i = 0
-        if (today.isNotEmpty()) { into.addView(sectionLabel("Today")); today.forEach { into.addView(memoryRow(it, i++)) } }
-        if (earlier.isNotEmpty()) { into.addView(sectionLabel("Earlier")); earlier.forEach { into.addView(memoryRow(it, i++)) } }
+        if (today.isNotEmpty()) { into.addView(sectionLabel("Today")); today.forEach { into.addView(memoryRow(it, i++, it.id in locked)) } }
+        if (earlier.isNotEmpty()) { into.addView(sectionLabel("Earlier")); earlier.forEach { into.addView(memoryRow(it, i++, it.id in locked)) } }
     }
 
     private fun sectionLabel(text: String) = ui.text(17f, 700).apply {
@@ -806,27 +882,55 @@ class MainActivity : ComponentActivity() {
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(30f); bottomMargin = ui.dpi(4f) }
     }
 
-    private fun memoryRow(m: Memory, index: Int): View = LinearLayout(this).apply {
+    /** [locked]: a password or other Private memory while locked: masked ("Wifi password is ••••••"), opens after unlock. */
+    private fun memoryRow(m: Memory, index: Int, locked: Boolean = false): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         setPadding(0, ui.dpi(11f), 0, ui.dpi(11f))
-        addView(ImageView(this@MainActivity).apply { setImageResource(ObjectIcons.forText(m.body + " " + (m.subject ?: ""))) },
+        val secret = Secrets.looksSecret(m)
+        if (locked) addView(ui.icon(R.drawable.ic_lock, 26f, look.dim).apply { setPadding(ui.dpi(6f), ui.dpi(6f), ui.dpi(6f), ui.dpi(6f)) },
             LinearLayout.LayoutParams(ui.dpi(38f), ui.dpi(38f)).apply { marginEnd = ui.dpi(14f) })
-        addView(ui.text(15.5f, 600, lines = 2).apply { text = m.body }, LinearLayout.LayoutParams(0, -2, 1f))
+        else addView(ImageView(this@MainActivity).apply { setImageResource(ObjectIcons.forText(m.body + " " + (m.subject ?: ""))) },
+            LinearLayout.LayoutParams(ui.dpi(38f), ui.dpi(38f)).apply { marginEnd = ui.dpi(14f) })
+        addView(ui.text(15.5f, 600, lines = 2).apply { text = if (locked) Secrets.masked(m.body) else m.body }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(ui.text(13f, 500, look.dim).apply { text = shortTime(m.createdAt) }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dpi(12f) })
-        setOnClickListener { memoryOptions(m) }
+        setOnClickListener { if (locked || secret) withUnlock { memoryOptions(m) } else memoryOptions(m) }
         alpha = 0f
         animate().alpha(1f).setStartDelay(500L + index.coerceAtMost(10) * 60L).setDuration(600).start()
     }
 
     private fun memoryOptions(m: Memory) {
-        dialog().setTitle(m.body)
+        val secret = Secrets.takeIf { it.looksSecret(m) }?.value(m.body)
+        val b = dialog().setTitle(m.body)
             .setMessage("Saved ${relative(m.createdAt)}")
-            .setPositiveButton("Keep", null)
-            .setNegativeButton("Delete") { _, _ ->
+            .setPositiveButton("Edit") { _, _ -> editMemory(m) }
+        if (secret != null) b.setNeutralButton("Copy") { _, _ -> copySecret(Secrets.service(m.body) ?: "Password", secret) }
+        b.setNegativeButton("Delete") { _, _ ->
                 app.cores.worker.execute { runCatching { app.cores.core.memories.trash(m.id); app.cores.core.reminders.forMemory(m.id).forEach { app.cores.core.reminders.cancel(it.id) } }
                     runCatching { Triggers.refreshAll(this) }
                     runOnUiThread { if (scene == Scene.MEMORIES) openMemories() } }
             }.show()
+    }
+
+    /** Fix a memory's words by hand (voice mishears names and numbers). Passwords get a field for the app too. */
+    private fun editMemory(m: Memory) {
+        val secretValue = Secrets.takeIf { it.looksSecret(m) }?.value(m.body)
+        val service = EditText(this).apply { setText(Secrets.service(m.body) ?: ""); hint = "App or service"; isSingleLine = true }
+        val body = EditText(this).apply { setText(secretValue ?: m.body); hint = if (secretValue != null) "Password" else "Memory" }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(ui.dpi(22f), ui.dpi(8f), ui.dpi(22f), 0)
+            if (secretValue != null) { addView(ui.text(13f, 600, look.dim).apply { text = "For" }); addView(service); addView(ui.text(13f, 600, look.dim).apply { text = "Password"; setPadding(0, ui.dpi(10f), 0, 0) }) }
+            addView(body)
+        }
+        dialog().setTitle("Edit").setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val text = if (secretValue != null) "${service.text.toString().trim().ifEmpty { "My" }} password is ${body.text.toString().trim()}" else body.text.toString().trim()
+                if (text.isEmpty()) return@setPositiveButton
+                app.cores.worker.execute {
+                    runCatching { app.cores.core.memories.update(m.id, MemoryEdit(body = text)); app.cores.core.processPending() }
+                    runOnUiThread { Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show(); when (scene) { Scene.MEMORIES -> openMemories(); Scene.TIMELINE -> openTimeline(); else -> Unit } }
+                }
+            }
+            .setNegativeButton("Cancel", null).show()
     }
 
     private fun openCategory(cat: Category) {
@@ -840,26 +944,60 @@ class MainActivity : ComponentActivity() {
             val mem = runCatching { app.cores.core.categories.memoriesIn(cat.id, 100) }.getOrDefault(emptyList())
             runOnUiThread {
                 if (scene != Scene.CATEGORY) return@runOnUiThread
-                if (cat.isPrivate) { rows.addView(emptyState("Private", "Ask Kataa by voice, then unlock with your fingerprint or PIN.")); return@runOnUiThread }
+                if (cat.isPrivate && !app.privateUnlocked) {
+                    rows.addView(emptyState("Private", "Your passwords and secrets. Unlock to see them."))
+                    rows.addView(settingsRow("Unlock", "Fingerprint, face or PIN") { withUnlock { openCategory(cat) } })
+                    mem.forEachIndexed { i, m -> rows.addView(memoryRow(m, i, locked = true)) }
+                    return@runOnUiThread
+                }
                 mem.forEachIndexed { i, m -> rows.addView(memoryRow(m, i)) }
             }
         }
     }
 
-    private fun openReminders() {
-        startList(Scene.REMINDERS, "Reminders")
+    /** Plan: today's list, this month's goals, other lists, then reminders. [day] "today"/"tomorrow" from "what do I have today?". */
+    private fun openReminders(day: String? = null) {
+        startList(Scene.REMINDERS, "Plan")
+        val lists = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        list.addView(lists)
+        app.cores.worker.execute {
+            val c = app.cores.core
+            val today = kDate(java.time.LocalDate.now())
+            val keys = (listOf(ListKey.day(today), ListKey.day(kDate(java.time.LocalDate.now().plusDays(1))),
+                ListKey.month(today.year, today.month.ordinal + 1)) + runCatching { c.lists.keys() }.getOrDefault(emptyList())).distinct()
+            val views = keys.mapNotNull { k -> runCatching { c.lists.view(k, today) }.getOrNull() }
+                .filter { it.items.isNotEmpty() || it.key == ListKey.day(today) }
+                .filter { ListKey.dayOf(it.key)?.let { d -> d >= today } ?: true }
+            runOnUiThread {
+                if (scene != Scene.REMINDERS) return@runOnUiThread
+                lists.addView(sectionLabel("Lists"))
+                views.forEach { v ->
+                    val name = when (v.label) { "today" -> "Today's to-do list"; "tomorrow" -> "Tomorrow"; "this month" -> "This month's goals"; else -> v.label.replaceFirstChar { it.uppercase() } }
+                    lists.addView(settingsRow(name, if (v.items.isEmpty()) "Empty. Tap to see it, then add by voice." else "${v.doneCount} of ${v.items.size} done" + (v.left.firstOrNull()?.let { " · next: ${it.body}" } ?: "")) { openList(v.key) })
+                }
+                lists.addView(settingsRow("New list", "Say \"my shopping list\", \"November 19th to-do list\" or \"this month's goals\"") { startTalking() })
+            }
+        }
+        list.addView(sectionLabel(day?.let { "Reminders ${it}" } ?: "Reminders"))
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         list.addView(rows)
         app.cores.worker.execute {
             val c = app.cores.core
             val items = runCatching {
-                c.reminders.active().mapNotNull { r -> c.memories.get(r.memoryId)?.let { Triple(r, it, whenText(r)) } }
+                val tz = java.time.ZoneId.systemDefault()
+                val range = when (day) {
+                    "today" -> java.time.LocalDate.now()
+                    "tomorrow" -> java.time.LocalDate.now().plusDays(1)
+                    else -> null
+                }?.let { d -> d.atStartOfDay(tz).toInstant().toEpochMilli() until d.plusDays(1).atStartOfDay(tz).toInstant().toEpochMilli() }
+                c.reminders.active().filter { r -> range == null || (r.snoozeUntil ?: r.fireAt)?.let { it in range } == true }
+                    .mapNotNull { r -> c.memories.get(r.memoryId)?.let { Triple(r, it, whenText(r)) } }
                     .sortedBy { it.first.fireAt ?: Long.MAX_VALUE }
             }.getOrDefault(emptyList())
             runOnUiThread {
                 if (scene != Scene.REMINDERS) return@runOnUiThread
                 if (items.isEmpty()) {
-                    rows.addView(emptyState("No reminders", "Try \"remind me to buy milk when I'm at Big Mart\" or \"remind me at 8 to call mom\"."))
+                    rows.addView(ui.text(15f, 500, look.dim).apply { text = if (day != null) "No reminders $day." else "No reminders. Try \"remind me at 8 to call mom\"." })
                     return@runOnUiThread
                 }
                 items.forEachIndexed { i, (r, m, w) ->
@@ -923,6 +1061,16 @@ class MainActivity : ComponentActivity() {
                 setOnCheckedChangeListener { _, on -> Look.setSpeakReplies(this@MainActivity, on) }
             })
         }, LinearLayout.LayoutParams(-1, ui.dpi(52f)))
+        val modes = listOf("auto" to "Tap, stops when you pause", "tap" to "Tap to start, tap to stop", "hold" to "Hold to talk")
+        val modeText = ui.text(13.5f, 500, look.dim)
+        fun modeLabel() = modes.first { it.first == Look.micMode(this) }.second
+        modeText.text = modeLabel() + ". Long ideas, lists and the journal always keep listening until you say \"that's it\"."
+        list.addView(settingsRow("Mic button", modeLabel()) {
+            dialog().setTitle("Mic button").setSingleChoiceItems(modes.map { it.second }.toTypedArray(), modes.indexOfFirst { it.first == Look.micMode(this) }) { d, i ->
+                Look.setMicMode(this, modes[i].first); d.dismiss(); openSettings()
+            }.show()
+        })
+        list.addView(modeText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dpi(8f) })
         sectionTitle("Smart mode")
         val mindNow = app.mind
         val mindDetail = ui.text(13.5f, 500, look.dim)
@@ -967,11 +1115,12 @@ class MainActivity : ComponentActivity() {
         main.postDelayed(refresh, 2000)
         sectionTitle("Reminders")
         list.addView(settingsRow("Allow reminders", "Notifications, location for store reminders, exact alarms, car Bluetooth") { askReminderPermissions(next = false) })
-        list.addView(settingsRow("Car, backups and tools", "Pick your car's Bluetooth, save an encrypted backup, restore") {
+        sectionTitle("Backup")
+        list.addView(settingsRow("Backup, restore and car", "Save an encrypted backup, restore one, pick your car's Bluetooth") {
             startActivity(Intent(this, DevConsoleActivity::class.java))
         })
         list.addView(ui.text(13.5f, 500, look.dim).apply {
-            text = "Everything you save stays on this phone, encrypted. Kataa has no internet permission.\n3D objects: Microsoft Fluent Emoji (MIT). Fonts: Space Grotesk, Manrope, Nunito (OFL). Shop map: © OpenStreetMap contributors (ODbL)."
+            text = "Everything you save stays on this phone, encrypted. Kataa never sends your memories anywhere.\n3D objects: Microsoft Fluent Emoji (MIT). Fonts: Space Grotesk, Manrope, Nunito (OFL). Shop map: © OpenStreetMap contributors (ODbL)."
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(34f) })
     }
 
@@ -1027,6 +1176,287 @@ class MainActivity : ComponentActivity() {
             if (exact) "alarms on time" else "alarms may be a few minutes late",
             if (place) "place reminders on" else "place reminders OFF",
         ).joinToString(", ")
+    }
+
+
+    // ---------------------------------------------------------------- questions Kataa asks
+
+    /** "Is this the right password?": the value and the app are editable before saving. Never auto-closes. */
+    private fun confirmSecretCard(r: Reply.ConfirmSecret) {
+        showMessage(ReplyText.of(r).substringBefore(":") + ": check it, then save.", keepOpen = true)
+        val service = EditText(this).apply { setText(r.service); hint = "App or service (Wifi, Gmail…)"; isSingleLine = true }
+        val value = EditText(this).apply { setText(r.value); hint = "Password"; isSingleLine = true }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(ui.dpi(22f), ui.dpi(8f), ui.dpi(22f), 0)
+            addView(ui.text(13f, 600, look.dim).apply { text = "For" }); addView(service)
+            addView(ui.text(13f, 600, look.dim).apply { text = "Password"; setPadding(0, ui.dpi(10f), 0, 0) }); addView(value)
+            if (r.replacing != null) addView(ui.text(13f, 500, look.dim).apply { text = "This replaces the one you saved ${relative(r.replacing!!.createdAt)}."; setPadding(0, ui.dpi(10f), 0, 0) })
+        }
+        openDialog = dialog().setTitle("Save this password?").setView(box).setCancelable(false)
+            .setPositiveButton("Save") { _, _ -> openDialog = null; session.confirmSecret(value.text.toString(), service.text.toString()) }
+            .setNegativeButton("Don't save") { _, _ -> openDialog = null; session.cancelSecret() }
+            .show()
+    }
+
+    /** "7 PM today or 7 AM tomorrow?": tap one, or say it. */
+    private fun pickTimeCard(r: Reply.PickTime) {
+        showMessage(ReplyText.of(r), keepOpen = true)
+        openDialog = dialog().setTitle("${r.memory.body}: when?")
+            .setItems(r.options.map { it.label.replaceFirstChar { c -> c.uppercase() } }.toTypedArray()) { _, i -> openDialog = null; session.pickTime(r.options[i]) }
+            .setNegativeButton("Later") { _, _ -> openDialog = null }
+            .show()
+    }
+
+    /** "I don't know your mom's birthday yet. When is it?": a date wheel, or just say it. */
+    private fun askForFact(r: Reply.NotFound) {
+        showMessage(ReplyText.of(r), keepOpen = true)
+        if (!r.isWhen) {
+            main.postDelayed({ if (lastState is KataaState.Done && scene == Scene.TALK) startTalking() }, if (Look.speakReplies(this)) 3200L else 900L)
+            return
+        }
+        main.postDelayed({
+            if (lastState !is KataaState.Done || scene != Scene.TALK) return@postDelayed
+            val now = Calendar.getInstance()
+            @Suppress("DEPRECATION")
+            val wheel = android.app.DatePickerDialog(this,
+                if (look.light) android.R.style.Theme_Holo_Light_Dialog_NoActionBar else android.R.style.Theme_Holo_Dialog_NoActionBar,
+                { _, y, m, d ->
+                    openDialog = null
+                    val month = java.text.DateFormatSymbols(java.util.Locale.ENGLISH).months[m]
+                    session.type("$d $month $y")
+                }, now.get(Calendar.YEAR), now.get(Calendar.MONTH), now.get(Calendar.DAY_OF_MONTH))
+            wheel.setTitle(r.askFor!!.replaceFirstChar { it.uppercase() })
+            wheel.setButton(android.content.DialogInterface.BUTTON_NEUTRAL, "Say it") { _, _ -> openDialog = null; startTalking() }
+            openDialog = wheel
+            wheel.show()
+        }, 900)
+    }
+
+    /** Copies a password, marked sensitive so the keyboard and clipboard preview hide it, and clears it after 30 s. */
+    private fun copySecret(label: String, value: String) {
+        val cm = getSystemService(android.content.ClipboardManager::class.java)
+        val clip = android.content.ClipData.newPlainText(label, value)
+        clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+        cm.setPrimaryClip(clip)
+        Toast.makeText(this, "Copied. Cleared from the clipboard in 30 seconds.", Toast.LENGTH_SHORT).show()
+        main.postDelayed({
+            runCatching {
+                val now = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+                if (now == null || now == value) { if (Build.VERSION.SDK_INT >= 28) cm.clearPrimaryClip() else cm.setPrimaryClip(android.content.ClipData.newPlainText("", "")) }
+            }
+        }, 30_000)
+    }
+
+    /** Fingerprint / PIN, then [then] runs (for showing, copying or editing a password from a list). */
+    private var afterUnlock: (() -> Unit)? = null
+    private val unlockThen = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        val next = afterUnlock; afterUnlock = null
+        if (res.resultCode == RESULT_OK) { app.unlockPrivateFor(60_000); next?.invoke() }
+    }
+
+    private fun withUnlock(then: () -> Unit) {
+        if (app.privateUnlocked) { then(); return }
+        val km = getSystemService(KeyguardManager::class.java)
+        @Suppress("DEPRECATION")
+        val i = km.createConfirmDeviceCredentialIntent("Unlock Private", "To see your password")
+        if (i == null) { Toast.makeText(this, "Set a screen lock on this phone to protect passwords.", Toast.LENGTH_LONG).show(); return }
+        afterUnlock = then
+        unlockThen.launch(i)
+    }
+
+    // ---------------------------------------------------------------- to-do lists
+
+    /** One to-do list with tick boxes. [say] is what Kataa answered ("2 of 5 done, 3 left."). */
+    private fun openList(key: String, say: String? = null) {
+        shownListKey = key
+        val today = java.time.LocalDate.now()
+        val label = ListKey.label(key, kotlinx.datetime.LocalDate(today.year, today.monthValue, today.dayOfMonth))
+        startList(Scene.LIST, when {
+            label == "today" -> "Today"
+            label == "tomorrow" -> "Tomorrow"
+            label == "this month" -> "This month"
+            else -> label.replaceFirstChar { it.uppercase() }
+        }, back = { openReminders() })
+        if (say != null) list.addView(ui.text(15.5f, 600, look.accent).apply { text = say }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(10f) })
+        val progress = ui.text(14f, 500, look.dim)
+        list.addView(progress, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(6f) })
+        val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        list.addView(rows)
+        list.addView(settingsRow("Add by voice", "Say the tasks; pauses are fine. Say \"that's it\" to finish.") {
+            app.cores.worker.execute {
+                runOnUiThread { session.type(if (key.startsWith("named:")) "write my ${key.removePrefix("named:")} list" else "write my to do list for ${listPhrase(key)}") }
+            }
+        })
+        fillList(key, rows, progress)
+    }
+
+    /** The words that name [key] for the parser ("today", "november 19th", "this month"). */
+    private fun listPhrase(key: String): String {
+        ListKey.dayOf(key)?.let { d -> return "${d.day} ${d.month.name.lowercase()} ${d.year}" }
+        if (key.startsWith("month:")) {
+            val (y, m) = key.removePrefix("month:").split('-').map(String::toInt)
+            return java.text.DateFormatSymbols(java.util.Locale.ENGLISH).months[m - 1].lowercase() + if (y != java.time.LocalDate.now().year) " $y" else ""
+        }
+        return "today"
+    }
+
+    private fun fillList(key: String, rows: LinearLayout, progress: TextView) {
+        app.cores.worker.execute {
+            val today = java.time.LocalDate.now().let { kotlinx.datetime.LocalDate(it.year, it.monthValue, it.dayOfMonth) }
+            val l = runCatching { app.cores.core.lists.view(key, today) }.getOrNull() ?: return@execute
+            runOnUiThread {
+                if (scene != Scene.LIST || shownListKey != key) return@runOnUiThread
+                rows.removeAllViews()
+                progress.text = if (l.items.isEmpty()) "" else "${l.doneCount} of ${l.items.size} done" +
+                    (l.totalCost.takeIf { it > 0 }?.let { " · Rs ${it.toLong()} left to spend" } ?: "") +
+                    (l.totalMinutes.takeIf { it > 0 }?.let { " · about ${if (it >= 60) "${it / 60} h ${it % 60} min" else "$it min"} left" } ?: "")
+                if (l.items.isEmpty()) { rows.addView(emptyState("Nothing here yet", "Tap \"Add by voice\" and say the tasks, like \"buy milk, call Didi, pay rent\".")); return@runOnUiThread }
+                l.items.forEachIndexed { i, item -> rows.addView(taskRow(item, l.carried(item), i) { done ->
+                    app.cores.worker.execute { runCatching { app.cores.core.lists.setDone(item.id, done) }; runOnUiThread { fillList(key, rows, progress) } }
+                }) }
+            }
+        }
+    }
+
+    private fun taskRow(item: ListItem, carried: Boolean, index: Int, onTick: (Boolean) -> Unit): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, ui.dpi(10f), 0, ui.dpi(10f))
+        val box = android.widget.CheckBox(this@MainActivity).apply {
+            isChecked = item.done; buttonTintList = android.content.res.ColorStateList.valueOf(look.accent)
+            contentDescription = if (item.done) "Done: ${item.body}" else "Not done: ${item.body}"
+            setOnClickListener { onTick(isChecked) }
+        }
+        addView(box)
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(ui.text(16f, 600, if (item.done) look.dim else look.fg, lines = 3).apply {
+                text = item.body
+                if (item.done) paintFlags = paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG
+            })
+            val meta = listOfNotNull(
+                item.cost?.let { "Rs ${if (it % 1.0 == 0.0) it.toLong() else it}" },
+                item.minutes?.let { if (it >= 60) "${it / 60} h${if (it % 60 > 0) " ${it % 60} min" else ""}" else "$it min" },
+                if (carried) "from ${ListKey.dayOf(item.listKey)?.let { "${it.day} ${it.month.name.lowercase().replaceFirstChar { c -> c.uppercase() }.take(3)}" } ?: "earlier"}" else null,
+            )
+            if (meta.isNotEmpty()) addView(ui.text(13f, 500, look.dim).apply { text = meta.joinToString(" · ") })
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dpi(6f) })
+        setOnClickListener { taskOptions(item) }
+        alpha = 0f
+        animate().alpha(1f).setStartDelay(150L + index.coerceAtMost(12) * 40L).setDuration(450).start()
+    }
+
+    private fun taskOptions(item: ListItem) {
+        val edit = EditText(this).apply { setText(item.body + (item.cost?.let { ", Rs ${it.toLong()}" } ?: "") + (item.minutes?.let { ", $it minutes" } ?: "")) }
+        dialog().setTitle("Task").setView(LinearLayout(this).apply { setPadding(ui.dpi(22f), ui.dpi(8f), ui.dpi(22f), 0); addView(edit, LinearLayout.LayoutParams(-1, -2)) })
+            .setPositiveButton("Save") { _, _ -> changeList { app.cores.core.lists.edit(item.id, edit.text.toString()) } }
+            .setNeutralButton("Move to tomorrow") { _, _ ->
+                changeList { app.cores.core.lists.move(item.id, ListKey.day(java.time.LocalDate.now().plusDays(1).let { kotlinx.datetime.LocalDate(it.year, it.monthValue, it.dayOfMonth) })) }
+            }
+            .setNegativeButton("Delete") { _, _ -> changeList { app.cores.core.lists.remove(item.id) } }
+            .show()
+    }
+
+    private fun changeList(block: () -> Unit) {
+        app.cores.worker.execute { runCatching(block); runOnUiThread { shownListKey?.let { if (scene == Scene.LIST) openList(it) } } }
+    }
+
+    // ---------------------------------------------------------------- journal
+
+    private fun kDate(d: java.time.LocalDate) = kotlinx.datetime.LocalDate(d.year, d.monthValue, d.dayOfMonth)
+    private fun jDate(d: kotlinx.datetime.LocalDate) = java.time.LocalDate.of(d.year, d.month.ordinal + 1, d.day)
+
+    /** One day of the journal: summary, what was said, tasks done. Arrows and a date wheel move between days. */
+    private fun openJournal(day: kotlinx.datetime.LocalDate) {
+        val label = ListKey.label(ListKey.day(day), kDate(java.time.LocalDate.now()))
+        startList(Scene.JOURNAL, "Journal", back = { openMemories() })
+        val nav = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        nav.addView(ui.icon(R.drawable.ic_back, 22f, look.fg).apply { contentDescription = "Day before"; setPadding(ui.dpi(8f), ui.dpi(8f), ui.dpi(8f), ui.dpi(8f))
+            setOnClickListener { openJournal(kDate(jDate(day).minusDays(1))) } }, LinearLayout.LayoutParams(ui.dpi(40f), ui.dpi(40f)))
+        nav.addView(ui.text(18f, 700, look.fg, Gravity.CENTER).apply {
+            text = label.replaceFirstChar { it.uppercase() } + if (label == "today" || label == "yesterday") " · ${day.day} ${day.month.name.lowercase().replaceFirstChar { it.uppercase() }}" else ""
+            setOnClickListener { dateWheel(day) { openJournal(it) } }
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(ui.icon(R.drawable.ic_back, 22f, look.fg).apply { rotation = 180f; contentDescription = "Day after"; setPadding(ui.dpi(8f), ui.dpi(8f), ui.dpi(8f), ui.dpi(8f))
+            setOnClickListener { openJournal(kDate(jDate(day).plusDays(1))) } }, LinearLayout.LayoutParams(ui.dpi(40f), ui.dpi(40f)))
+        list.addView(nav, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(14f) })
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        list.addView(body)
+        list.addView(settingsRow("Write in today's journal", "Tap, then talk about your day. Pauses are fine; say \"that's it\" to finish.") { session.type("today's journal") })
+        app.cores.worker.execute {
+            val c = app.cores.core
+            val j = runCatching { c.journal.day(day) }.getOrNull()
+            val tz = java.time.ZoneId.systemDefault()
+            val from = jDate(day).atStartOfDay(tz).toInstant().toEpochMilli()
+            val done = runCatching { c.lists.doneBetween(from, from + 86_400_000L) }.getOrDefault(emptyList())
+            runOnUiThread {
+                if (scene != Scene.JOURNAL) return@runOnUiThread
+                if (j == null || (j.entries.isEmpty() && done.isEmpty())) { body.addView(emptyState("Nothing written", "Say \"today's journal\" and tell Kataa about your day.")); return@runOnUiThread }
+                j.summary?.let {
+                    body.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL; background = ui.glass(22f); setPadding(ui.dpi(18f), ui.dpi(14f), ui.dpi(18f), ui.dpi(16f))
+                        addView(ui.text(13f, 700, look.accent).apply { text = if (j.summaryByAi) "Summary" else "In short" })
+                        addView(ui.text(16f, 500).apply { text = it }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(6f) })
+                    }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dpi(18f) })
+                }
+                if (j.entries.isNotEmpty()) body.addView(sectionLabel("What you said"))
+                j.entries.forEachIndexed { i, m ->
+                    body.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL; setPadding(0, ui.dpi(10f), 0, ui.dpi(10f))
+                        addView(ui.text(13f, 600, look.dim).apply { text = android.text.format.DateFormat.getTimeFormat(this@MainActivity).format(java.util.Date(m.createdAt)) })
+                        addView(ui.text(16f, 500).apply { text = m.body; setTextIsSelectable(true) })
+                        alpha = 0f; animate().alpha(1f).setStartDelay(200L + i * 60L).setDuration(500).start()
+                    })
+                }
+                if (done.isNotEmpty()) {
+                    body.addView(sectionLabel("Done that day"))
+                    done.forEach { t -> body.addView(ui.text(15.5f, 500).apply { text = "✓  ${t.body}"; setPadding(0, ui.dpi(6f), 0, ui.dpi(6f)) }) }
+                }
+            }
+        }
+    }
+
+    /** The rotating date wheel. */
+    private fun dateWheel(start: kotlinx.datetime.LocalDate, onPick: (kotlinx.datetime.LocalDate) -> Unit) {
+        @Suppress("DEPRECATION")
+        android.app.DatePickerDialog(this,
+            if (look.light) android.R.style.Theme_Holo_Light_Dialog_NoActionBar else android.R.style.Theme_Holo_Dialog_NoActionBar,
+            { _, y, m, d -> onPick(kotlinx.datetime.LocalDate(y, m + 1, d)) }, start.year, start.month.ordinal, start.day).show()
+    }
+
+    // ---------------------------------------------------------------- everything (timeline)
+
+    /** "Show me everything": every memory, journal day and list, newest first, grouped by day; the wheel jumps to a date. */
+    private fun openTimeline(until: kotlinx.datetime.LocalDate? = null) {
+        startList(Scene.TIMELINE, "Everything", back = { openMemories() })
+        list.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = ui.glass(); setPadding(ui.dpi(18f), ui.dpi(12f), ui.dpi(18f), ui.dpi(12f))
+            addView(ui.icon(R.drawable.ic_search, 18f, look.accent), LinearLayout.LayoutParams(ui.dpi(18f), ui.dpi(18f)).apply { marginEnd = ui.dpi(10f) })
+            addView(ui.text(15f, 700).apply { text = until?.let { "Up to ${it.day} ${it.month.name.lowercase().replaceFirstChar { c -> c.uppercase() }} ${it.year}" } ?: "Jump to a date" })
+            setOnClickListener { dateWheel(until ?: kDate(java.time.LocalDate.now())) { openTimeline(it) } }
+            ui.pressable(this)
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dpi(16f) })
+        val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        list.addView(rows)
+        app.cores.worker.execute {
+            val c = app.cores.core
+            val tz = java.time.ZoneId.systemDefault()
+            val endMs = until?.let { jDate(it).plusDays(1).atStartOfDay(tz).toInstant().toEpochMilli() } ?: Long.MAX_VALUE
+            val mem = runCatching { c.memories.recent(400).filter { it.createdAt < endMs } }.getOrDefault(emptyList())
+            val priv = runCatching { c.memories.privateIds(mem.map { it.id }) }.getOrDefault(emptySet())
+            val journalIds = mem.filter { runCatching { c.journal.isJournal(it.id) }.getOrDefault(false) }.map { it.id }.toSet()
+            val byDay = mem.take(200).groupBy { java.time.Instant.ofEpochMilli(it.createdAt).atZone(tz).toLocalDate() }
+            runOnUiThread {
+                if (scene != Scene.TIMELINE) return@runOnUiThread
+                if (byDay.isEmpty()) { rows.addView(emptyState("Nothing yet", "Everything you save shows up here, by date.")); return@runOnUiThread }
+                var i = 0
+                for ((d, ms) in byDay) {
+                    rows.addView(sectionLabel(java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", java.util.Locale.ENGLISH).format(d)))
+                    if (ms.any { it.id in journalIds }) rows.addView(settingsRow("Journal", "Open this day's journal") { openJournal(kDate(d)) })
+                    ms.filter { it.id !in journalIds }.forEach { m -> rows.addView(memoryRow(m, i++, locked = m.id in priv && !app.privateUnlocked)) }
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------- small things

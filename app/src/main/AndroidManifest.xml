@@ -110,6 +110,12 @@
             </intent-filter>
         </activity>
 
+        <!-- Journal summaries by the on-device AI, only while charging and idle. -->
+        <service
+            android:name=".data.BackgroundAi"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <service
             android:name=".entry.QuickTile"
             android:exported="true"

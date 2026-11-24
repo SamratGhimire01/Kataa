@@ -63,6 +63,11 @@ enum class Look(
         fun setSpeakReplies(context: Context, on: Boolean) =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("speak", on).apply()
 
+        /** How the mic button works: "auto" (stops when you pause), "tap" (tap to start, tap to stop), "hold" (hold to talk). */
+        fun micMode(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("mic", "auto") ?: "auto"
+        fun setMicMode(context: Context, mode: String) =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("mic", mode).apply()
+
         /** Smart mode: the on-device AI helps with long or unclear sentences and picks answers. On by default. */
         fun smartMode(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("smart", true)
         fun setSmartMode(context: Context, on: Boolean) =

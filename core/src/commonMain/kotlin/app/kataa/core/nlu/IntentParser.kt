@@ -61,6 +61,8 @@ sealed interface Understanding {
     data class Journal(val text: String?) : Understanding
     /** "Show my journal for yesterday", "what did I do on Monday". */
     data class ShowJournal(val day: kotlinx.datetime.LocalDate) : Understanding
+    /** "Show me everything", "my timeline": every memory, list and journal day, newest first. */
+    data object Timeline : Understanding
     /** Too short or ambiguous: the app should ask "Save this or search for it?". */
     data class Unclear(val text: String) : Understanding
 }
@@ -93,6 +95,7 @@ object IntentParser {
     )
     private val IDEA = Regex("^(?:i |we )?(?:have |have got |got |have just got |just got )?(?:a |an |one |another |a new |new |big |a big )?(?:idea|thought)(?: for you| to save)?$" +
         "|^(?:note|save|write|remember|take)(?: down)? (?:this|my|an|a|one)(?: new)? idea$|^(?:let me|i want to|i wanna) (?:tell you|share)(?: an| my| one)? (?:idea|something|a thought)$|^(?:listen|start) idea(?: mode)?$|^idea time$")
+    private val TIMELINE = Regex("^(?:please )?(?:show|open|give)?(?: me)? ?(?:everything|all my memories|all memories|all of it|all my stuff|my timeline|the timeline|timeline|everything i saved|everything i have saved)$")
     private val ALARM = Regex("^(?:please )?(?:can you |could you )?(?:wake me(?: up)?|set (?:an |the |my |a )?alarm|alarm)\\b(?: (?:for|at))?\\s*(.*)$")
     /** "write the password of wifi sunflower123", "save password for gmail is x". Group 1: what follows the keyword. */
     private val PW_OF = Regex("^(?:please )?(?:write|save|note|store|remember|keep|add|put)(?: down)?(?: that)?(?: my| the| this| a)? (?:password|passcode|pin|pin code) (?:of|for) (.+)$")
@@ -135,6 +138,7 @@ object IntentParser {
         }
 
         if (IDEA.matches(text)) return Understanding.StartIdea
+        if (TIMELINE.matches(text)) return Understanding.Timeline
         if (lists) ListParser.parse(text, raw, nowMs, tz)?.let { return it }
         AGENDA.find(text)?.let { m ->
             val day = m.groupValues.drop(1).firstOrNull { it.isNotEmpty() }

@@ -17,6 +17,7 @@ class KataaApplication : Application() {
     @Volatile private var privateUnlockedUntil = 0L
 
     fun unlockPrivateFor(ms: Long) { privateUnlockedUntil = System.currentTimeMillis() + ms }
+    val privateUnlocked: Boolean get() = System.currentTimeMillis() < privateUnlockedUntil
 
     lateinit var cores: CoreProvider
         private set
@@ -88,6 +89,8 @@ class KataaApplication : Application() {
             }.onFailure { android.util.Log.e("Kataa", "places pack", it) }
             runCatching { Triggers.refreshAll(this) }
         }
+        // Journal summaries by the AI: only while charging and idle, never while the user waits.
+        runCatching { app.kataa.data.BackgroundAi.schedule(this) }
     }
 
     companion object {
