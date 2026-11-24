@@ -6,8 +6,12 @@ object ReplyText {
      * What Kataa says out loud. Same as [of], except it never speaks a password or PIN (someone may be nearby):
      * the screen shows it, the voice only says what it is.
      */
+    /** "Wifi password", but "PIN" and "Password" alone when no service was named. */
+    private fun secretName(service: String): String =
+        if (Regex("(?i)\\b(?:password|passcode|pin|pin code)$").containsMatchIn(service)) service else "$service password"
+
     fun spoken(r: Reply): String = when {
-        r is Reply.ConfirmSecret -> "Is this ${r.service} password right? It's on the screen. Say yes, or tell me the right one."
+        r is Reply.ConfirmSecret -> "Is this ${secretName(r.service)} right? It's on the screen. Say yes, or tell me the right one."
         r is Reply.Answer && app.kataa.core.memory.Secrets.looksSecret(r.memory) ->
             "Here's your ${app.kataa.core.memory.Secrets.service(r.memory.body) ?: "password"}. It's on the screen."
         r is Reply.Replaced && app.kataa.core.memory.Secrets.looksSecret(r.memory) -> "Updated. I replaced the old one."
@@ -50,7 +54,7 @@ object ReplyText {
         is Reply.Several -> r.replies.joinToString(" ") { of(it) }
         is Reply.Agenda -> agenda(r)
         Reply.ListeningForIdea -> "Go ahead, I'm listening. Take your time."
-        is Reply.ConfirmSecret -> "${r.service} password: ${r.value}. Is this right?" + if (r.replacing != null) " It will replace the old one." else ""
+        is Reply.ConfirmSecret -> "${secretName(r.service)}: ${r.value}. Is this right?" + if (r.replacing != null) " It will replace the old one." else ""
         Reply.NotSaved -> "Okay, I didn't save it."
         is Reply.PickTime -> r.options.joinToString(" or ") { it.label } + "?"
         is Reply.ListeningForList -> "Go ahead, tell me ${listName(r.label)}. Say \"that's it\" when you're done."

@@ -173,7 +173,10 @@ object IntentParser {
         // Reminders before questions: "remind me what time..." is rare; "can you remind me to..." is common.
         val remindCue = REMIND_CUE.containsMatchIn(text)
         val time = TimeParser.parse(text, nowMs, tz)
-        val moment = PlaceParser.parse(text, knownPlaceNames)
+        val moment = PlaceParser.parse(text, knownPlaceNames)?.takeUnless { m ->
+            // "in one hour and fifteen minutes": the words are the time, not a place.
+            time != null && (time.parts + listOf(time.range)).any { r -> m.range.first <= r.last && r.first <= m.range.last }
+        }
         val obligation = OBLIGATION.containsMatchIn(text)
         val task = TASK_START.containsMatchIn(text) && !NOT_A_TASK.containsMatchIn(text) && !questionMark
         if (remindCue || (obligation && (time != null || moment != null)) || task) {
@@ -268,7 +271,12 @@ object IntentParser {
             ?: PW_BARE.find(text)?.takeIf { it.groupValues[1] !in setOf("my", "your", "his", "her", "what", "which") }?.let { it.groupValues[1] to it.groupValues[2] }
             ?: return null
         val svc = service.trim().removePrefix("my ").removePrefix("the ").trim()
-        val v = value.trim()
+        // "my pin is one two three four": the digits.
+        val v = value.trim().let { s ->
+            val digits = mapOf("zero" to "0", "oh" to "0", "one" to "1", "two" to "2", "three" to "3", "four" to "4", "five" to "5", "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9")
+            val w = s.split(' ')
+            if (w.size >= 3 && w.all { it in digits || it.length == 1 && it[0].isDigit() }) w.joinToString("") { digits[it] ?: it } else s
+        }
         if (svc.isEmpty() || v.isEmpty() || svc.split(' ').size > 5) return null
         // Said as a plain statement ("my wifi password is x"): keep the user's own words. Otherwise write it clearly.
         val statement = Regex("\\b(?:password|passcode|pin|pin code)(?: (?:at|in|for) (?:my |the |our )?[a-z0-9'-]+(?: [a-z0-9'-]+)?)? (?:is|=) ").containsMatchIn(text) &&
@@ -291,13 +299,16 @@ object IntentParser {
                 if (t.range.first == 0 && t.range.last >= v.length - 1) return null
             }
         }
-        val shownService = restoreCase(svc, raw).replaceFirstChar { it.uppercase() }
+        // "my pin is 1234": the kind of secret is its name ("PIN", "Password").
+        val kindOnly = svc in setOf("password", "passcode", "pin", "pin code")
+        val shownService = if (kindOnly) (if (svc.startsWith("pin")) "PIN" else svc.replaceFirstChar { it.uppercase() })
+            else restoreCase(svc, raw).replaceFirstChar { it.uppercase() }
         val shown = originalCase(v, raw)
         val exact = originalValue(v, raw)
         val body = if (statement) saveBody(raw).let { b -> if (!exact.endsWith("?")) b.removeSuffix("?").trimEnd() else b }
             .let { b -> if (b.endsWith(shown) && exact.length > shown.length) b + exact.substring(shown.length) else b }
             else "$shownService password is $exact"
-        return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey("$svc password"), null, replacesOld = true,
+        return Understanding.Save(body, MemoryKind.FACT, Text.subjectKey(if (kindOnly) svc else "$svc password"), null, replacesOld = true,
             secret = Secret(shownService, exact))
     }
 

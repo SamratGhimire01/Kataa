@@ -79,8 +79,16 @@ object TimeParser {
     private val WEEKDAY = Regex("\\b(?:on |this |next |coming )?$DAYNAME(?: (morning|afternoon|evening|night))?\\b")
     private val DATE_DM = Regex("\\b(?:on )?(?:the )?(\\d{1,2})(?:st|nd|rd|th)?(?: of)? $MONTHNAME\\b")
     private val DATE_MD = Regex("\\b(?:on )?$MONTHNAME (\\d{1,2})(?:st|nd|rd|th)?\\b")
-    private val HOURS_AND_MINUTES = Regex("\\b(?:in|after) ([a-z0-9]+) (?:hours?|hrs?) (?:and )?([a-z0-9]+) (?:minutes?|mins?)\\b(?: from now| later)?")
-    private val DATE_D = Regex("\\bon the (\\d{1,2})(?:st|nd|rd|th)\\b(?! $NOT_A_DAY)|(?<!\\bfor )\\bthe (\\d{1,2})(?:st|nd|rd|th)(?! $NOT_A_DAY)(?= at\\b| by\\b| in the\\b| morning\\b| evening\\b| night\\b)")
+    private val HOURS_AND_MINUTES = Regex("\\b(?:in|after) ([a-z0-9]+) (?:hours?|hrs?) (?:and )?([a-z0-9]+(?:[ -][a-z]+)?) (?:minutes?|mins?)\\b(?: from now| later)?")
+    private val HOUR_AND_HALF = Regex("\\b(?:in|after) (?:([a-z0-9]+) (?:hours?|hrs?) and a half|([a-z0-9]+) and a half (?:hours?|hrs?)|(\\d+)\\.5 (?:hours?|hrs?))\\b(?: from now| later)?")
+
+    /** "an" -> 1, "thirty five" -> 35, "12" -> 12. */
+    private fun spokenNumber(s: String): Int? {
+        if (s == "a" || s == "an") return 1
+        val parts = s.split(' ', '-').map { Text.numberValue(it) ?: return null }
+        return parts.sum()
+    }
+    private val DATE_D = Regex("\\bon the (\\d{1,2})(?:st|nd|rd|th)\\b(?! $NOT_A_DAY)|(?<!\\bfor )\\bthe (\\d{1,2})(?:st|nd|rd|th)(?! $NOT_A_DAY)(?= at\\b| by\\b| in the\\b| morning\\b| evening\\b| night\\b)|\\b(?:by|before|until|till) the (\\d{1,2})(?:st|nd|rd|th)\\b(?! $NOT_A_DAY)")
     /** "on the 3rd floor": an ordinal that is not a day of the month. */
     private const val NOT_A_DAY = "(?:floor|shelf|drawer|row|room|step|stair|street|lane|house|building|box|cabinet|rack|level|page|place|position|time|gate|door|seat|bench|block|flat|platform)"
 
@@ -93,10 +101,15 @@ object TimeParser {
         HALF_HOUR.find(text)?.let {
             return TimeMatch(now + kotlin.time.Duration.parse("30m"), null, it.range, false)
         }
-        // "in 2 hours and 30 minutes".
+        // "in an hour and a half", "in one and a half hours", "in 1.5 hours".
+        HOUR_AND_HALF.find(text)?.let { m ->
+            val n = m.groupValues.drop(1).firstOrNull { it.isNotEmpty() }?.let(::spokenNumber)
+            if (n != null) return TimeMatch(now + kotlin.time.Duration.parse("${n}h 30m"), null, m.range, false)
+        }
+        // "in 2 hours and 30 minutes", "in 2 hours and thirty five minutes".
         HOURS_AND_MINUTES.find(text)?.let { m ->
-            val h = Text.numberValue(m.groupValues[1]) ?: (if (m.groupValues[1] in setOf("a", "an")) 1 else null)
-            val mins = Text.numberValue(m.groupValues[2])
+            val h = spokenNumber(m.groupValues[1])
+            val mins = spokenNumber(m.groupValues[2])
             if (h != null && mins != null) return TimeMatch(now + kotlin.time.Duration.parse("${h}h ${mins}m"), null, m.range, false)
         }
         var relDate: LocalDate? = null
@@ -322,11 +335,17 @@ object TimeParser {
         DATE_DM.find(text)?.let { m -> return resolveDate(m.groupValues[1].toInt(), MONTHS[m.groupValues[2]]!!, today)?.let { it to m.range } }
         DATE_MD.find(text)?.let { m -> return resolveDate(m.groupValues[2].toInt(), MONTHS[m.groupValues[1]]!!, today)?.let { it to m.range } }
         DATE_D.find(text)?.let { m ->
-            val day = m.groupValues[1].ifEmpty { m.groupValues[2] }.toInt()
+            val day = m.groupValues.drop(1).first { it.isNotEmpty() }.toInt()
+            if (day !in 1..31) return null
             var month = today.month.number
             var year = today.year
             if (day < today.day) { month += 1; if (month > 12) { month = 1; year++ } }
-            return runCatching { LocalDate(year, month, day) }.getOrNull()?.let { it to m.range }
+            // "on the 31st" in a 30-day month: the next month that has one.
+            repeat(12) {
+                runCatching { LocalDate(year, month, day) }.getOrNull()?.let { return it to m.range }
+                month += 1; if (month > 12) { month = 1; year++ }
+            }
+            return null
         }
         return null
     }

@@ -639,6 +639,12 @@ class Assistant(private val core: KataaCore) {
         return m.groupValues[1].toInt() to m.groupValues[2].toIntOrNull()
     }
 
+    /** "yes please", "yes it is", "yeah that is right", "ok yes", "okay save it": only yes words, at least one of them a yes. */
+    private fun saysYes(text: String): Boolean {
+        val words = text.replace("'", " ").split(' ').filter { it.isNotEmpty() }
+        return words.isNotEmpty() && words.all { it in YES_FILLER || it in YES_WORD } && words.any { it in YES_WORD }
+    }
+
     /** Words left after the time is taken out, other than "remind me", "make it", "the first one" and the like. */
     private fun saysMoreThanATime(text: String, ctx: AssistantContext): Boolean {
         var s = text
@@ -771,9 +777,11 @@ class Assistant(private val core: KataaCore) {
                 // "at 9:30": a new clock, still AM or PM: ask again for it (on the asked day, for a repeat).
                 val tz = ctx.timeZone
                 val times = listOf(t.fireAt, t.alternative).map { it.toLocalDateTime(tz).time }.sortedBy { it.hour }
-                val day = previous.options.minOf { it.atMs }.let { Instant.fromEpochMilliseconds(it).toLocalDateTime(tz).date }
+                val dates = previous.options.map { Instant.fromEpochMilliseconds(it.atMs).toLocalDateTime(tz).date }
+                // A repeat or a named day ("tomorrow at 7", "on friday at 6"): the same day. Otherwise the next 9:30.
+                val day = if (previous.rrule != null) dates.min() else dates.distinct().singleOrNull()
                 val ats = times.map { tm ->
-                    val at = kotlinx.datetime.LocalDateTime(if (previous.rrule != null) day else t.fireAt.toLocalDateTime(tz).date, tm).toInstant(tz).toEpochMilliseconds()
+                    val at = kotlinx.datetime.LocalDateTime(day ?: t.fireAt.toLocalDateTime(tz).date, tm).toInstant(tz).toEpochMilliseconds()
                     if (at > ctx.nowMs) at else previous.rrule?.let { r -> app.kataa.core.triggers.Recurrence.next(at, r, tz, afterMs = ctx.nowMs) }
                         ?: (at + 24 * 3600_000L)
                 }
@@ -783,7 +791,7 @@ class Assistant(private val core: KataaCore) {
         }
         if (previous is Reply.ConfirmSecret) {
             val text = Text.normalize(raw)
-            if (YES.matches(text)) return confirmSecret(previous, ctx)
+            if (YES.matches(text) || saysYes(text)) return confirmSecret(previous, ctx)
             if (NO.matches(text)) return Reply.NotSaved
             // "no it is sunflower124", "it's sunflower124": the corrected value, shown again for a yes.
             CORRECT_VALUE.find(text)?.let { m ->
@@ -1110,7 +1118,9 @@ class Assistant(private val core: KataaCore) {
         private val MULTI = Regex("\\b(?:and also|and then|also|and remind|and my|and i|but|plus)\\b")
         private val HINTS = Regex("\\b(?:forget|remember to|have to|need to|should|must|tell me|what|where|when|which|how)\\b")
         private val TIMEISH = Regex("\\d|\\b(?:after|before|later|lunch|dinner|breakfast|noon|evening|night|morning|afternoon|week|month|o'clock)\\b")
-        private val SMALL_TALK = Regex("^(?:(?:ok|okay|ok ok|thanks|thank you|thanks a lot|thank you so much|cool|great|nice|good|hi|hello|hey|bye|good night|good morning|yes|yeah|no|sure|alright|all right|fine|wow)\\s*)+$")
+        private val YES_WORD = setOf("yes", "yeah", "yep", "yup", "ya", "haan", "ho", "correct", "right", "ok", "okay", "sure", "confirm", "save", "exactly", "perfect")
+        private val YES_FILLER = setOf("please", "it", "is", "that", "s", "thats", "all", "absolutely", "totally", "go", "ahead", "do", "good", "fine", "thanks", "thank", "you", "just", "now", "kataa")
+        private val SMALL_TALK = Regex("^(?:(?:hi there|hello there|hey there|ok|okay|ok ok|thanks|thank you|thanks a lot|thank you so much|cool|great|nice|good|hi|hello|hey|bye|good night|good morning|yes|yeah|no|sure|alright|all right|fine|wow)\\s*)+$")
         private val NO_TIME = Regex("^(?:no|nope|nah|no thanks|no thank you|skip|skip it|nothing|no time|not now|never mind|nevermind|just save it|just save|save it|later|i will decide later|do not remind me|no need|it is fine|fine|ok|okay|leave it)$")
         private val LOCATION_ONLY = Regex("^(?:in|inside|on|under|behind|beside|next to|near|by|at|in front of|on top of|with)\\b")
     }

@@ -37,7 +37,7 @@ object Text {
     }
 
     private val HESITATION = Regex("\\b(?:u+h+|u+m+|uhm+|hmm+|e+r+m*|ah+)\\b")
-    private val LEAD_INTERJECTION = Regex("^(?:(?:hey|hi|hello|ok|okay|ugh|oh|ah|so|ok so|okay so|well|bro|yaar|dude|listen|hey kataa|kataa)\\s+)+")
+    private val LEAD_INTERJECTION = Regex("^(?:(?:ok google|okay google|hey google|hey|hi|hello|ok|okay|ugh|oh|ah|so|ok so|okay so|well|bro|yaar|dude|listen|hey kataa|kataa)\\s+)+")
     private val SWEAR = Regex("\\b(?:stupid|damn|damned|freaking|fucking|bloody|silly|goddamn)\\s+")
     private val TRAIL = Regex("\\s+(?:bro|yaar|dude|man|please)$")
 

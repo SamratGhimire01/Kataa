@@ -663,6 +663,42 @@ class ListsAndJournalTest {
         assertTrue(say("hey where is my passport") !is Reply.Saved)
     }
 
+    @Test fun reviewFindingsPass14() {
+        fun set(r: Reply) = assertIs<Reply.ReminderSet>(r, "$r").reminders.single()
+        fun local(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of(tz.id)).toLocalDateTime().toString()
+        fun body(r: Reply) = core.memories.get(set(r).memoryId)!!.body.trimEnd('.')
+        // 1: every way of saying yes saves the password.
+        for ((i, yes) in listOf("yes please", "yes it is", "yeah that is right", "yes that's correct", "ok yes", "okay save it").withIndex()) {
+            val card = assertIs<Reply.ConfirmSecret>(say("my wifi$i password is sunflower12$i"))
+            assertTrue(core.assistant.followUp(card, yes, ctx()).let { it is Reply.Saved || it is Reply.Replaced }, yes)
+        }
+        // 2, 3: "my pin is 1234" is a PIN, said and shown that way.
+        val pin = assertIs<Reply.ConfirmSecret>(say("my pin is 1234"))
+        assertEquals("PIN: 1234. Is this right?", ReplyText.of(pin))
+        assertTrue(ReplyText.spoken(pin).startsWith("Is this PIN right?"), ReplyText.spoken(pin))
+        val savedPin = core.assistant.followUp(pin, "yes", ctx())
+        assertIs<Reply.Saved>(savedPin); core.processPending()
+        assertEquals("Here's your PIN. It's on the screen.", ReplyText.spoken(core.assistant.handle("what is my pin", ctx())))
+        // 4, 7, 8: hours and a half, compound minutes, no place from the time words.
+        val half = say("remind me in an hour and a half to call mom")
+        assertEquals("2026-11-24T09:30", local(set(half).fireAt!!)); assertEquals("Call mom", body(half))
+        assertEquals("2026-11-24T09:30", local(set(say("remind me in 1.5 hours to check the oven")).fireAt!!))
+        assertEquals("2026-11-24T10:35", local(set(say("remind me in 2 hours and thirty five minutes to call dad")).fireAt!!))
+        assertEquals("2026-11-24T09:15", local(set(say("remind me in one hour and fifteen minutes to call didi")).fireAt!!))
+        // 5, 9: "by the 5th", "on the 31st".
+        assertEquals("2026-12-05", local(set(say("remind me to pay the rent by the 5th")).fireAt!!).take(10))
+        assertEquals("2026-12-31", local(set(say("remind me to pay rent on the 31st")).fireAt!!).take(10))
+        // 6: a new clock keeps the named day.
+        val tmr = assertIs<Reply.PickTime>(say("remind me tomorrow at 7 to call mom"))
+        val again = assertIs<Reply.PickTime>(core.assistant.followUp(tmr, "at 9:30", ctx()))
+        assertEquals(listOf("2026-11-25T09:30", "2026-11-25T21:30"), again.options.map { local(it.atMs) })
+        // 10: PIN digits said as words.
+        assertEquals("1234", assertIs<Reply.ConfirmSecret>(say("my atm pin is one two three four")).value)
+        // 11: greetings.
+        assertIs<Reply.SmallTalk>(say("hi there"))
+        assertTrue(say("ok google where are my keys") !is Reply.Saved)
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()

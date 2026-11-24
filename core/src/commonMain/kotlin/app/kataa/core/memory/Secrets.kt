@@ -33,8 +33,10 @@ object Secrets {
     fun service(body: String): String? {
         val m = VALUE.find(body) ?: return null
         val before = body.substring(0, m.range.first).trim()
-            .replace(Regex("(?i)^(?:my|the|our)\\s+"), "").trim()
-        return before.ifEmpty { null }?.replaceFirstChar { it.uppercase() }
+            .replace(Regex("(?i)^(?:my|the|our)(?:\\s+|$)"), "").trim()
+        // "My pin is 1234": the kind of secret ("PIN", "Password").
+        if (before.isEmpty()) return m.groupValues[1].lowercase().let { if (it.startsWith("pin")) "PIN" else it.replaceFirstChar { c -> c.uppercase() } }
+        return before.replaceFirstChar { it.uppercase() }
     }
 
     const val DOTS = "••••••"
