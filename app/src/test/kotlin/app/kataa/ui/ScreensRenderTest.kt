@@ -6,6 +6,10 @@ import android.os.Looper
 import android.view.View
 import app.kataa.KataaApplication
 import app.kataa.core.assistant.Reply
+import app.kataa.core.assistant.TimeOption
+import app.kataa.core.nlu.Secret
+import app.kataa.core.nlu.Understanding
+import app.kataa.places.MapActivity
 import app.kataa.core.model.Memory
 import app.kataa.core.model.MemoryKind
 import app.kataa.core.model.Source
@@ -65,7 +69,21 @@ class ScreensRenderTest {
         setState(app, KataaState.Done("where are my keys?", Reply.Answer("In the blue drawer", memory("My keys are in the blue drawer"), emptyList(), emptyList()))); idle(1800); shot(root, "$tag-4-answer")
         act.javaClass.getDeclaredMethod("openMemories").apply { isAccessible = true }.invoke(act); idle(1500); shot(root, "$tag-5-memories")
         act.javaClass.getDeclaredMethod("openSettings").apply { isAccessible = true }.invoke(act); idle(1200); shot(root, "$tag-6-settings")
+        act.javaClass.getDeclaredMethod("openReminders", String::class.java).apply { isAccessible = true }.invoke(act, null); idle(1200); shot(root, "$tag-7-plan")
+        act.javaClass.getDeclaredMethod("openList", String::class.java, String::class.java).apply { isAccessible = true }
+            .invoke(act, "day:2026-11-24", "0 of 3 done, 3 left."); idle(1200); shot(root, "$tag-8-list")
+        act.javaClass.getDeclaredMethod("openJournal", kotlinx.datetime.LocalDate::class.java).apply { isAccessible = true }
+            .invoke(act, kotlinx.datetime.LocalDate(2026, 11, 24)); idle(1200); shot(root, "$tag-9-journal")
+        act.javaClass.getDeclaredMethod("openTimeline", kotlinx.datetime.LocalDate::class.java).apply { isAccessible = true }.invoke(act, null); idle(1200); shot(root, "$tag-10-everything")
+        val pending = Understanding.Save("Wifi password is sunflower123", MemoryKind.FACT, "wifi password", null, true, Secret("Wifi", "sunflower123"))
+        setState(app, KataaState.Done("my wifi password is sunflower123", Reply.ConfirmSecret("Wifi", "sunflower123", null, pending, "my wifi password is sunflower123"))); idle(1500); shot(root, "$tag-11-password-check")
+        setState(app, KataaState.Done("call didi at 7", Reply.PickTime(memory("Call didi", MemoryKind.REMINDER), listOf(
+            TimeOption(0, "Today at 7:00 PM"), TimeOption(1, "Tomorrow at 7:00 AM")), false))); idle(1500); shot(root, "$tag-12-am-pm")
+        setState(app, KataaState.Done("i've got an idea", Reply.ListeningForIdea)); idle(800); shot(root, "$tag-13-idea")
         controller.pause().stop().destroy()
+        val map = Robolectric.buildActivity(MapActivity::class.java).setup()
+        idle(1500); shot(map.get().window.decorView, "$tag-14-map")
+        map.pause().stop().destroy()
     }
 
     @Test fun neon() = run(Look.NEON, "neon")
