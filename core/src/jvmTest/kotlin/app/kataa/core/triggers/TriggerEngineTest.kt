@@ -41,7 +41,9 @@ class TriggerEngineTest {
         val ny = TimeZone.of("America/New_York")
         val n = Recurrence.next(at(2027, 3, 13, 8, zone = ny), "FREQ=DAILY", ny)!!
         assertEquals(8, local(n, ny).hour)
-        assertNull(Recurrence.next(fri8, "FREQ=YEARLY", tz))
+        assertNull(Recurrence.next(fri8, "FREQ=HOURLY", tz))
+        // Birthdays: same day next year.
+        kotlin.test.assertNotNull(Recurrence.next(fri8, "FREQ=YEARLY", tz))
     }
 
     @Test fun alarmFiresOnceAndRepeatsMove() {

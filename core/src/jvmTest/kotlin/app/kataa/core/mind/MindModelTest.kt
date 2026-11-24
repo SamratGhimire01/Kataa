@@ -94,7 +94,9 @@ class MindModelTest {
         println("CMDS " + m.understand("I have to submit the assignment the day after tomorrow at 10 and also my bike is parked near the gate", "Tuesday, 24 November 2026, 7:00 AM"))
         val both = say("I have to submit the assignment the day after tomorrow at 10 and also my bike is parked near the gate")
         kotlin.test.assertIs<app.kataa.core.assistant.Reply.Several>(both)
-        assertTrue(both.replies.any { it is app.kataa.core.assistant.Reply.ReminderSet } && both.replies.any { it is app.kataa.core.assistant.Reply.Saved }, "$both")
+        // "at 10" with no am/pm: the reminder part asks "10 AM or 10 PM?"; the bike part is saved.
+        assertTrue(both.replies.any { it is app.kataa.core.assistant.Reply.ReminderSet || it is app.kataa.core.assistant.Reply.PickTime } &&
+            both.replies.any { it is app.kataa.core.assistant.Reply.Saved }, "$both")
 
         // Small talk never reaches the model and is never saved.
         assertTrue(say("ok thanks") !is app.kataa.core.assistant.Reply.Saved)

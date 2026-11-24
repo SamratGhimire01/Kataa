@@ -66,7 +66,11 @@ sealed interface Reply {
     data class NeedsTime(val memory: Memory) : Reply
     data class Answer(val shortAnswer: String, val memory: Memory, val previous: List<Memory>, val hits: List<SearchHit>) : Reply
     data class DidIAnswer(val done: Boolean, val memory: Memory?) : Reply
-    data class NotFound(val query: String) : Reply
+    /**
+     * Nothing saved answers [query]. [askFor] ("your mom's birthday") is set when Kataa can ask for the answer
+     * and save it: the next thing the user says goes to [Assistant.followUp].
+     */
+    data class NotFound(val query: String, val askFor: String? = null, val isWhen: Boolean = false) : Reply
     /** The answer exists but is in Private: ask for fingerprint, then call [Assistant.handle] again with privateUnlocked. */
     data class NeedsUnlock(val query: String) : Reply
     data class Corrected(val before: Memory, val after: Memory) : Reply
@@ -86,6 +90,11 @@ sealed interface Reply {
      * [replacing] is the current one for that service, when this would replace it.
      */
     data class ConfirmSecret(val service: String, val value: String, val replacing: Memory?, internal val pending: Understanding.Save, internal val raw: String) : Reply
+    /**
+     * "Call Didi at 7:13": the reminder is saved but not scheduled until the user picks one of [options]
+     * (the best guess first), by tapping or saying "PM", "morning", "tomorrow"... -> [Assistant.followUp].
+     */
+    data class PickTime(val memory: Memory, val options: List<TimeOption>, internal val persistent: Boolean) : Reply
     /** The user said no to saving: nothing was stored. */
     data object NotSaved : Reply
     /** "What do I have today?": the reminders for [label] ("today", "tomorrow", "coming up"), soonest first. */
@@ -95,6 +104,9 @@ sealed interface Reply {
     /** "ok thanks", "hello": nothing to save or search. [said] is the normalized text. */
     data class SmallTalk(val said: String) : Reply
 }
+
+/** One choice of a [Reply.PickTime]: "7:13 PM today". */
+data class TimeOption(val atMs: Long, val label: String)
 
 /** One line of an [Reply.Agenda]: the reminder, its note, and when or where it fires ("6:30 PM", "at Big Mart"). */
 data class AgendaItem(val memory: Memory, val reminder: Reminder, val description: String)
@@ -151,6 +163,28 @@ class Assistant(private val core: KataaCore) {
         // A save that is only a plain note may really be the tail of the first request ("... and the bread"): keep it whole.
         if (meant.withIndex().any { (i, it) -> it is Understanding.Save && it.kind == MemoryKind.NOTE && parts[i].split(' ').size < 4 }) return null
         return Reply.Several(parts.zip(meant).map { (p, u) -> byRules(u, p, ctx) })
+    }
+
+    /**
+     * "7:13" with no am/pm, morning/evening or a hint ("wake up" is morning, "dinner" is evening): both halves of
+     * the clock are possible, so ask instead of guessing. Null when the time is clear.
+     */
+    private fun pickTime(memory: Memory, u: Understanding.Remind, raw: String, ctx: AssistantContext): Reply? {
+        val t = u.time ?: return null
+        val other = t.alternative ?: return null
+        if (u.moment != null) return null
+        val said = Text.normalize(raw)
+        val hour = t.fireAt.toLocalDateTime(ctx.timeZone).hour
+        val morning = MORNING_HINT.containsMatchIn(said)
+        val evening = EVENING_HINT.containsMatchIn(said)
+        if (morning != evening) {
+            // "wake me up at 5", "dinner at 8": the words say which half; use it without asking.
+            val wantAm = morning
+            if ((hour < 12) == wantAm) return null
+            return schedule(memory, t.copy(fireAt = other, alternative = null), null, u.persistent, ctx)
+        }
+        val options = listOf(t.fireAt, other).map { TimeOption(it.toEpochMilliseconds(), Describe.time(it, null, ctx)) }
+        return Reply.PickTime(memory, options, u.persistent)
     }
 
     /** "What do I have today?": active reminders, for one day or all, soonest first. */
@@ -300,6 +334,44 @@ class Assistant(private val core: KataaCore) {
         return save(c.raw, u, ctx, confirmed = true)
     }
 
+    /** "What is my mom's birthday?" with nothing saved: say so, and offer to remember it ("When is it?"). */
+    private fun notFound(u: Understanding.Ask): Reply {
+        val m = ASKABLE.find(u.query) ?: return Reply.NotFound(u.query)
+        val thing = m.groupValues[2].trim()
+        if (thing.isEmpty() || thing.split(' ').size > 5 || ASKABLE_SKIP.containsMatchIn(thing)) return Reply.NotFound(u.query)
+        val yours = thing.replace(Regex("^(?:my|our)\\s+"), "your ").let { if (it.startsWith("your ")) it else "your $it" }
+        return Reply.NotFound(u.query, yours, isWhen = m.groupValues[1] == "when")
+    }
+
+    /**
+     * The answer to "When is it?" / "What is it?" after [Reply.NotFound]: saved as "Mom's birthday is 12 March".
+     * Birthdays and anniversaries with a date also get a yearly reminder on the day.
+     */
+    private fun rememberAnswer(nf: Reply.NotFound, raw: String, ctx: AssistantContext): Reply {
+        val thing = nf.askFor!!.removePrefix("your ")
+        val answer = raw.trim().trimEnd('.', '!').replace(Regex("(?i)^(?:it is|it's|its|on|that is|they are)\\s+"), "")
+        val body = "My ${thing} is $answer"
+        val subject = Text.subjectKey(thing)
+        val saved = save(raw, Understanding.Save(Text.sentence(body), MemoryKind.FACT, subject, null, replacesOld = true), ctx)
+        val memory = (saved as? Reply.Saved)?.memory ?: (saved as? Reply.Replaced)?.memory ?: return saved
+        if (YEARLY_THING.containsMatchIn(thing)) {
+            TimeParser.parse(Text.normalize(answer), ctx.nowMs, ctx.timeZone)?.let { t ->
+                val day = t.fireAt.toLocalDateTime(ctx.timeZone).date
+                val at = kotlinx.datetime.LocalDateTime(day, kotlinx.datetime.LocalTime(9, 0)).toInstant(ctx.timeZone)
+                val r = core.reminders.addTime(memory.id, at.toEpochMilliseconds(), ctx.timeZone.id, "FREQ=YEARLY")
+                return Reply.ReminderSet(memory, listOf(r), Describe.time(at, "FREQ=YEARLY", ctx), hint = "Saved. I'll remind you every year.")
+            }
+        }
+        return saved
+    }
+
+    /** The user tapped or said one of the times of a [Reply.PickTime]. */
+    fun pickTimeOption(p: Reply.PickTime, option: TimeOption, ctx: AssistantContext): Reply {
+        val at = Instant.fromEpochMilliseconds(option.atMs)
+        val t = app.kataa.core.nlu.TimeMatch(at, null, 0..0, timeWasDefaulted = false)
+        return schedule(p.memory, t, null, p.persistent, ctx)
+    }
+
     /** "Save it" after a [Reply.NeedsClarification] or [Reply.NotFound]. */
     fun saveAsNote(raw: String, ctx: AssistantContext): Reply =
         save(raw, Understanding.Save(IntentParser.saveBody(raw), MemoryKind.NOTE, null, null), ctx)
@@ -355,6 +427,7 @@ class Assistant(private val core: KataaCore) {
             NewMemory(u.body, MemoryKind.REMINDER, ctx.source, rawTranscript = raw.takeIf { ctx.source == Source.VOICE }),
         )
         setLast(memory.id)
+        pickTime(memory, u, raw, ctx)?.let { return it }
         return schedule(memory, u.time, u.moment, u.persistent, ctx)
     }
 
@@ -364,6 +437,33 @@ class Assistant(private val core: KataaCore) {
      * Anything that is not an answer is handled as a new request.
      */
     fun followUp(previous: Reply, raw: String, ctx: AssistantContext): Reply {
+        if (previous is Reply.NotFound && previous.askFor != null) {
+            val text = Text.normalize(raw)
+            if (NO.matches(text) || NO_TIME.matches(text)) return Reply.NotSaved
+            val u = IntentParser.parse(raw, ctx.nowMs, ctx.timeZone)
+            // A new question or request instead of an answer: handle it normally.
+            if (u is Understanding.Ask && (QUESTION_WORD.containsMatchIn(text) || Text.isQuestionMarked(raw)) ||
+                u is Understanding.Remind && REMIND_WORD.containsMatchIn(text) || u is Understanding.Agenda ||
+                u == Understanding.StartIdea || u == Understanding.Undo || text.split(' ').size > 12) return handle(raw, ctx)
+            return rememberAnswer(previous, raw, ctx)
+        }
+        if (previous is Reply.PickTime) {
+            val text = Text.normalize(raw)
+            val pick = when {
+                PICK_FIRST.matches(text) -> previous.options.first()
+                PICK_SECOND.matches(text) -> previous.options.getOrNull(1)
+                else -> previous.options.firstOrNull { o ->
+                    val h = Instant.fromEpochMilliseconds(o.atMs).toLocalDateTime(ctx.timeZone).hour
+                    (AM_WORD.containsMatchIn(text) && h < 12) || (PM_WORD.containsMatchIn(text) && h >= 12)
+                }
+            }
+            if (pick != null) return pickTimeOption(previous, pick, ctx)
+            // A whole new time ("tomorrow at 8 pm"): schedule that instead.
+            TimeParser.parse(text, ctx.nowMs, ctx.timeZone)?.takeIf { it.alternative == null }?.let { t ->
+                return schedule(previous.memory, t, null, previous.persistent, ctx)
+            }
+            return handle(raw, ctx)
+        }
         if (previous is Reply.ConfirmSecret) {
             val text = Text.normalize(raw)
             if (YES.matches(text)) return confirmSecret(previous, ctx)
@@ -512,7 +612,7 @@ class Assistant(private val core: KataaCore) {
             }
             if (pick != null) {
                 if (!ctx.privateUnlocked && lockedAnswerExists(u)) return Reply.NeedsUnlock(u.query)
-                return Reply.NotFound(u.query)
+                return notFound(u)
             }
         }
         val top = result.hits.firstOrNull()
@@ -520,7 +620,7 @@ class Assistant(private val core: KataaCore) {
             if (!ctx.privateUnlocked && lockedAnswerExists(u)) {
                 return Reply.NeedsUnlock(u.query)
             }
-            return Reply.NotFound(u.query)
+            return notFound(u)
         }
         return Reply.Answer(shortAnswer(u.type, top.memory, ctx), top.memory, emptyList(), result.hits)
     }
@@ -650,6 +750,17 @@ class Assistant(private val core: KataaCore) {
         private val YES = Regex("^(?:yes|yeah|yep|yup|ya|haan|ho|correct|right|that is right|that is correct|exactly|save it|save|ok|okay|ok save it|sure|confirm|yes save it|yes correct|perfect)$")
         private val NO = Regex("^(?:no|nope|nah|cancel|do not save|do not save it|forget it|never mind|nevermind|stop|wrong)$")
         private val CORRECT_VALUE = Regex("^(?:no|nope|wrong|not that)?[ ,]*(?:it is|its|it was|the password is|password is|make it|change it to|i said)\\s+(.+)$")
+        private val MORNING_HINT = Regex("\\b(?:wake|wake up|breakfast|morning|sunrise|before work|before office|before college)\\b")
+        private val EVENING_HINT = Regex("\\b(?:dinner|supper|tonight|evening|night|after work|after office|after college|sunset)\\b")
+        private val AM_WORD = Regex("\\b(?:am|a m|morning|in the morning|tomorrow morning|early)\\b")
+        private val PM_WORD = Regex("\\b(?:pm|p m|evening|night|tonight|afternoon|in the evening)\\b")
+        private val PICK_FIRST = Regex("^(?:the )?(?:first|1st)(?: (?:one|1))?$|^(?:yes|yeah|ok|okay|that one|right|correct)$")
+        private val PICK_SECOND = Regex("^(?:the )?(?:second|2nd|other|last)(?: (?:one|1))?$")
+        private val QUESTION_WORD = Regex("^(?:what|where|when|who|whom|which|how|why|did|do|does|is|are|can|could|show|find|tell|give|search)\\b")
+        private val ASKABLE = Regex("^(what|when|which)(?: is| are| was|s)? (?:my |our |the )?(.+?)$")
+        private val ASKABLE_SKIP = Regex("\\b(?:time|today|tomorrow|weather|date today|day today|reminders?|tasks?|plans?)\\b|^(?:i |it |that |this )")
+        private val YEARLY_THING = Regex("\\b(?:birthday|bday|anniversary|death anniversary|wedding day)\\b")
+        private val REMIND_WORD = Regex("\\bremind\\b")
         private val VAULT_WORDS = setOf("password", "passcode", "pin", "secret", "private", "code")
         private const val CORRECTION_WINDOW_MS = 30 * 60 * 1000L
         private const val SURE_SIMILARITY = 0.80

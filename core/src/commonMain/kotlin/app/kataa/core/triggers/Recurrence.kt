@@ -12,7 +12,7 @@ import kotlin.time.Instant
 
 /**
  * Next occurrence for the small RRULE subset the understanding layer produces:
- * FREQ=DAILY, FREQ=WEEKLY;BYDAY=MO[,TU...], FREQ=MONTHLY. Computed in the reminder's own time zone,
+ * FREQ=DAILY, FREQ=WEEKLY;BYDAY=MO[,TU...], FREQ=MONTHLY, FREQ=YEARLY. Computed in the reminder's own time zone,
  * so "every day at 8" stays at 8:00 across daylight-saving changes and travel.
  */
 object Recurrence {
@@ -38,6 +38,9 @@ object Recurrence {
                     d
                 }
                 "MONTHLY" -> nextMonthSameDay(date, prev.date.day)
+                // Birthdays and anniversaries; 29 February falls on 28 February in other years.
+                "YEARLY" -> runCatching { kotlinx.datetime.LocalDate(date.year + 1, prev.date.month, prev.date.day) }
+                    .getOrElse { kotlinx.datetime.LocalDate(date.year + 1, prev.date.month, 28) }
                 else -> return null
             }
             val at = date.atTime(time).toInstant(tz).toEpochMilliseconds()

@@ -21,6 +21,7 @@ object Describe {
             return when {
                 rrule == "FREQ=DAILY" -> "Every day at $clock"
                 rrule == "FREQ=MONTHLY" -> "Every month on the ${t.day}${suffix(t.day)} at $clock"
+                rrule == "FREQ=YEARLY" -> "Every year on ${t.day} ${MONTHS[t.month.ordinal]} at $clock"
                 rrule.endsWith("BYDAY=MO,TU,WE,TH,FR") -> "Every weekday at $clock"
                 rrule.startsWith("FREQ=WEEKLY;BYDAY=") -> "Every ${BYDAY[rrule.substringAfter("BYDAY=")] ?: "week"} at $clock"
                 else -> "Repeating, next at $clock"

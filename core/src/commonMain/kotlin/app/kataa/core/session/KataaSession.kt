@@ -132,6 +132,20 @@ class KataaSession(
         }
     }
 
+    /** A time button on the "AM or PM?" card. */
+    fun pickTime(option: app.kataa.core.assistant.TimeOption) {
+        val pending = awaiting as? Reply.PickTime ?: return
+        runOnCore {
+            try {
+                val c = core()
+                awaiting = null
+                _state.value = KataaState.Done(option.label, c.assistant.pickTimeOption(pending, option, context()))
+            } catch (t: Throwable) {
+                _state.value = KataaState.Failed(SpeechError.OTHER)
+            }
+        }
+    }
+
     /** "Don't save" on the password card. */
     fun cancelSecret() {
         if (awaiting !is Reply.ConfirmSecret) return
@@ -166,7 +180,10 @@ class KataaSession(
                 // "this is Big Mart" with no recent fix: get one now and try again.
                 freshLocation?.invoke()?.let { loc -> reply = c.assistant.handle(text, ctx.copy(location = loc)) }
             }
-            awaiting = reply.takeIf { it is Reply.NeedsTime || it is Reply.NeedsPlace || it is Reply.NeedsLocation || it is Reply.ConfirmSecret }
+            // A question Kataa asked (when? AM or PM? is this password right?): the next thing said answers it.
+            fun asks(r: Reply) = r is Reply.NeedsTime || r is Reply.NeedsPlace || r is Reply.NeedsLocation || r is Reply.ConfirmSecret ||
+                r is Reply.PickTime || (r is Reply.NotFound && r.askFor != null)
+            awaiting = if (reply is Reply.Several) (reply as Reply.Several).replies.lastOrNull(::asks) else reply.takeIf(::asks)
             _state.value = KataaState.Done(text, reply)
             // Embedding and categories happen after the answer is on screen; a failure there must not
             // turn a saved memory into an error.

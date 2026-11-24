@@ -87,17 +87,49 @@ class UnderstandingFixesTest {
 
     @Test fun alarms() {
         assertEquals(LocalDateTime(2026, 11, 25, 5, 0), fireAt(say("wake me up at 5 am")))
-        assertEquals(LocalDateTime(2026, 11, 24, 19, 0), fireAt(say("set an alarm for 7")))
+        // "7" with no am/pm at 10:45 AM: 7 PM today or 7 AM tomorrow, so it asks.
+        val ask = assertIs<Reply.PickTime>(say("set an alarm for 7"))
+        assertEquals("Today at 7:00 PM or Tomorrow at 7:00 AM?", ReplyText.of(ask))
+        assertEquals(LocalDateTime(2026, 11, 25, 7, 0), fireAt(core.assistant.followUp(ask, "am", ctx())))
     }
 
     @Test fun agendaQuestions() {
         say("remind me to call mom at 6 30 pm")
-        say("remind me tomorrow at 9 to pay rent")
+        say("remind me tomorrow at 9 am to pay rent")
         val today = assertIs<Reply.Agenda>(say("what do I have to do today"))
         assertEquals(listOf("Call mom"), today.items.map { it.memory.body })
         assertIs<Reply.Agenda>(say("what are my reminders")).let { assertEquals(2, it.items.size) }
         assertIs<Reply.Agenda>(say("what do I have tomorrow")).let { assertEquals(listOf("Pay rent"), it.items.map { i -> i.memory.body }) }
         assertEquals(2, core.reminders.active().size, "asking must not create reminders")
+    }
+
+    @Test fun ambiguousTimesAsk() {
+        val a = assertIs<Reply.PickTime>(say("call didi at 7:13"))
+        assertEquals(listOf(LocalDateTime(2026, 11, 24, 19, 13), LocalDateTime(2026, 11, 25, 7, 13)),
+            a.options.map { Instant.fromEpochMilliseconds(it.atMs).toLocalDateTime(tz) })
+        assertEquals(LocalDateTime(2026, 11, 25, 7, 13), fireAt(core.assistant.followUp(a, "the second one", ctx())))
+        // "after 3 days at 7": the day is kept, only the half of the clock is asked.
+        val b = assertIs<Reply.PickTime>(say("remind me to call dad after 3 days at 7"))
+        assertTrue(b.options.all { Instant.fromEpochMilliseconds(it.atMs).toLocalDateTime(tz).date == kotlinx.datetime.LocalDate(2026, 11, 27) }, "$b")
+        assertEquals(19, fireAt(core.assistant.followUp(b, "evening", ctx())).hour)
+        // Clear ones never ask.
+        assertEquals(5, fireAt(say("wake me up at 5")).hour)
+        assertEquals(20, fireAt(say("remind me to eat dinner at 8")).hour)
+        assertEquals(19, fireAt(say("call mom at 7 pm")).hour)
+        assertEquals(18, fireAt(say("remind me to pay bill at 18:00")).hour)
+    }
+
+    @Test fun unknownFactAsksThenRemembers() {
+        val nf = assertIs<Reply.NotFound>(say("what is my mom's birthday"))
+        assertEquals("your mom's birthday", nf.askFor)
+        val r = core.assistant.followUp(nf, "12 March", ctx())
+        val set = assertIs<Reply.ReminderSet>(r, "$r")
+        assertEquals("My mom's birthday is 12 March", set.memory.body)
+        assertEquals("FREQ=YEARLY", set.reminders.single().rrule)
+        assertTrue((say("when is mom's birthday") as Reply.Answer).shortAnswer.contains("12 march", ignoreCase = true))
+        // A new question instead of an answer is just handled.
+        val nf2 = assertIs<Reply.NotFound>(say("what is my passport number"))
+        assertIs<Reply.NotFound>(core.assistant.followUp(nf2, "where is my umbrella", ctx()))
     }
 
     @Test fun unknownQuestionIsNotAnsweredWithARandomNote() {
@@ -111,9 +143,9 @@ class UnderstandingFixesTest {
         say("the charger is in my office bag")
         val a = say("ugh where did i leave the stupid charger again")
         assertTrue(a is Reply.Answer && a.shortAnswer.contains("office bag", true), "$a")
-        val r = say("uh remind me uh to um call didi at like 7")
-        assertEquals(19, fireAt(r).hour)
-        assertEquals("Call didi", (r as Reply.ReminderSet).memory.body)
+        val ask = assertIs<Reply.PickTime>(say("uh remind me uh to um call didi at like 7"))
+        assertEquals("Call didi", ask.memory.body)
+        assertEquals(19, fireAt(core.assistant.followUp(ask, "pm", ctx())).hour)
     }
 
     @Test fun remindWithoutMe() {
@@ -130,7 +162,8 @@ class UnderstandingFixesTest {
     @Test fun twoThingsInOneSentence() {
         val r = say("I have to submit the assignment the day after tomorrow at 10 and my bike is parked near the gate")
         val several = assertIs<Reply.Several>(r, "$r")
-        assertTrue(several.replies.any { it is Reply.ReminderSet } && several.replies.any { it is Reply.Saved }, "$r")
+        // "at 10" could be 10 AM or 10 PM: the reminder part asks, the bike part is saved.
+        assertTrue(several.replies.any { it is Reply.PickTime } && several.replies.any { it is Reply.Saved }, "$r")
     }
 
     @Test fun ideaModeStarts() {

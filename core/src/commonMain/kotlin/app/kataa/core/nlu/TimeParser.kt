@@ -10,6 +10,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atTime
 import kotlinx.datetime.isoDayNumber
 import kotlinx.datetime.number
+import kotlinx.datetime.minus
 import kotlinx.datetime.plus
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
@@ -24,6 +25,11 @@ data class TimeMatch(
     val range: IntRange,
     /** True when the user gave no time of day at all and the default was used ("tomorrow" -> 9:00). */
     val timeWasDefaulted: Boolean,
+    /**
+     * The other half of the clock when the user said a bare hour ("at 7:13", no am/pm, no morning/evening):
+     * [fireAt] is the best guess and this the other reading, so the app can ask "AM or PM?". Null when clear.
+     */
+    val alternative: Instant? = null,
 )
 
 /**
@@ -94,9 +100,11 @@ object TimeParser {
 
         // 2) Clock time, if any.
         var clock: LocalTime? = null
+        var halfGuessed = false
         AT_CLOCK.find(text)?.let { m ->
             clock = clockFrom(m)
             if (clock != null) spans += m.range
+            halfGuessed = clock != null && bareHour(m)
         }
 
         if (relDate != null) {
@@ -104,7 +112,8 @@ object TimeParser {
             val clk = clock
             val t = clk ?: if (partOf(text) != null) LocalTime(partOf(text)!!, 0) else local.time
             val adj = if (clk != null && clk.hour < 12 && !hasAmPm(text)) partOf(text)?.takeIf { it >= 12 }?.let { LocalTime(clk.hour + 12, clk.minute) } ?: clk else t
-            return TimeMatch(LocalDateTime(relDate!!, adj).toInstant(tz), null, spans.minOf { it.first }..spans.maxOf { it.last }, false)
+            val other = if (clk != null && halfGuessed && partOf(text) == null) LocalDateTime(relDate!!, otherHalf(adj)).toInstant(tz) else null
+            return TimeMatch(LocalDateTime(relDate!!, adj).toInstant(tz), null, spans.minOf { it.first }..spans.maxOf { it.last }, false, other)
         }
 
         // 3) Recurrence.
@@ -201,7 +210,24 @@ object TimeParser {
             at = LocalDateTime(day, time)
         }
         val range = spans.minOf { it.first }..spans.maxOf { it.last }
-        return TimeMatch(at.toInstant(tz), rrule, range, defaulted)
+        var other: Instant? = null
+        if (halfGuessed && partHour == null && rrule == null) {
+            var alt = LocalDateTime(at.date, otherHalf(at.time))
+            if (date == null && alt <= local) alt = LocalDateTime(alt.date.plus(1, DateTimeUnit.DAY), alt.time)
+            if (date == null && alt.date > local.date.plus(1, DateTimeUnit.DAY)) alt = LocalDateTime(alt.date.minus(1, DateTimeUnit.DAY), alt.time)
+            if (alt != at && alt > local) other = alt.toInstant(tz)
+        }
+        return TimeMatch(at.toInstant(tz), rrule, range, defaulted, other)
+    }
+
+    private fun otherHalf(t: LocalTime) = LocalTime((t.hour + 12) % 24, t.minute)
+
+    /** An hour said without am/pm or a 24-hour form ("at 7", "7:13"), so it could be morning or evening. */
+    private fun bareHour(m: MatchResult): Boolean {
+        val g = m.groupValues
+        if (g[7].isNotEmpty() || g[3].isNotEmpty() && !g[3].startsWith("o") || g[6].isNotEmpty()) return false
+        val h = (g[1].ifEmpty { g[4].ifEmpty { g[8] } }).let { if (it.length == 2 && it.startsWith("0")) return false else it.toIntOrNull() } ?: return false
+        return h in 1..12
     }
 
     private const val DEFAULT_HOUR = 9

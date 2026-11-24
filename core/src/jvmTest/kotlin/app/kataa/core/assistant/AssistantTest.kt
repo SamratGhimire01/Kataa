@@ -26,7 +26,12 @@ class AssistantTest {
     private fun say(s: String, at: GeoPoint? = null, unlocked: Boolean = false): Reply {
         val ctx = AssistantContext(clock.now, tz, at, unlocked)
         val r = core.assistant.handle(s, ctx)
-        return if (r is Reply.ConfirmSecret) core.assistant.followUp(r, "yes", ctx) else r
+        return when (r) {
+            is Reply.ConfirmSecret -> core.assistant.followUp(r, "yes", ctx)
+            // "at 5" without am/pm asks; these tests take Kataa's own first guess.
+            is Reply.PickTime -> core.assistant.followUp(r, "the first one", ctx)
+            else -> r
+        }
     }
 
     private fun minutes(n: Int) { clock.now += n * 60_000L }

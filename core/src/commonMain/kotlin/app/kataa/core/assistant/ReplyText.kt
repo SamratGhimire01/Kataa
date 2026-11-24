@@ -25,7 +25,7 @@ object ReplyText {
         Reply.NeedsLocation -> "I need your location for that."
         is Reply.Answer -> r.shortAnswer
         is Reply.DidIAnswer -> if (r.done) "Yes, you did." else "I have no record of that."
-        is Reply.NotFound -> "I don't know that yet."
+        is Reply.NotFound -> if (r.askFor != null) "I don't know ${r.askFor} yet. ${if (r.isWhen) "When is it?" else "What is it?"} I'll remember." else "I don't know that yet."
         is Reply.NeedsUnlock -> "That's in Private. Unlock to see it."
         is Reply.Corrected -> "Fixed."
         is Reply.Undone -> "Deleted: ${r.memory.body}"
@@ -52,5 +52,6 @@ object ReplyText {
         Reply.ListeningForIdea -> "Go ahead, I'm listening. Take your time."
         is Reply.ConfirmSecret -> "${r.service} password: ${r.value}. Is this right?" + if (r.replacing != null) " It will replace the old one." else ""
         Reply.NotSaved -> "Okay, I didn't save it."
+        is Reply.PickTime -> r.options.joinToString(" or ") { it.label } + "?"
     }
 }
