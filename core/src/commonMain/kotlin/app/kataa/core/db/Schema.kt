@@ -306,6 +306,10 @@ object Schema {
     /** v3: how many entries a journal day's summary was made from, so a deleted entry rebuilds it. */
     val v3: List<String> = listOf(
         "ALTER TABLE journal_days ADD COLUMN entry_count INTEGER NOT NULL DEFAULT 0",
-        // Existing days: the summary is checked again once (the count starts at 0 and differs from the live count).
+        // Existing days get their live count, so their summaries (the AI's too) are kept.
+        """
+        UPDATE journal_days SET entry_count = (SELECT count(*) FROM journal_entries j JOIN memories m ON m.id = j.memory_id
+                                               WHERE j.day = journal_days.day AND m.deleted_at IS NULL)
+        """.trimIndent(),
     )
 }

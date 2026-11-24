@@ -104,6 +104,8 @@ object IntentParser {
     /** "save my instagram password samrat@123", "write wifi password as abc". */
     private val PW_SAVE = Regex("^(?:please )?(?:write|save|note|store|remember|keep|add|put)(?: down)?(?: that)?(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: is| as| =)? (\\S.*)$")
     /** "netflix password is nf2026" without "my". */
+    /** "wifi password at home is blue sky 7" -> ("wifi at home", "blue sky 7"). */
+    private val PW_AT = Regex("^(?:my |the |our )?((?:[a-z0-9'-]+ )?[a-z0-9'-]+) (?:password|passcode|pin|pin code) ((?:at|in|for) (?:my |the |our )?[a-z0-9'-]+(?: [a-z0-9'-]+)?) (?:is|=) (.+)$")
     private val PW_BARE = Regex("^(?:the |our )?((?:[a-z0-9'-]+ ){0,2}?[a-z0-9'-]+) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
     /** "change my facebook password to x", "my new facebook password is x". */
     private val PW_CHANGE = Regex("^(?:please )?(?:change|update|set|reset|replace)(?: my| the| our)? (.+?) (?:password|passcode|pin|pin code)(?: to| as| into| with|=)? (\\S.*)$|^(?:my |the |our )?new (.+?) (?:password|passcode|pin|pin code) (?:is|=) (.+)$")
@@ -248,24 +250,30 @@ object IntentParser {
                 }
             }
             ?: PW_SAVE.find(text)?.let { it.groupValues[1] to it.groupValues[2] }
+            ?: PW_AT.find(text)?.let { "${it.groupValues[1]} ${it.groupValues[2]}" to it.groupValues[3] }
             ?: PW_BARE.find(text)?.takeIf { it.groupValues[1] !in setOf("my", "your", "his", "her", "what", "which") }?.let { it.groupValues[1] to it.groupValues[2] }
             ?: return null
         val svc = service.trim().removePrefix("my ").removePrefix("the ").trim()
         val v = value.trim()
-        if (svc.isEmpty() || v.isEmpty() || svc.split(' ').size > 4 || v.startsWith("in ") || v.startsWith("on ")) return null
+        if (svc.isEmpty() || v.isEmpty() || svc.split(' ').size > 5) return null
         // Said as a plain statement ("my wifi password is x"): keep the user's own words. Otherwise write it clearly.
-        val statement = Regex("\\b(?:password|passcode|pin|pin code) (?:is|=) ").containsMatchIn(text) && !text.startsWith("change") && !Regex("\\bnew\\b").containsMatchIn(text)
-        // "remember to change the wifi password tomorrow" is a reminder; "write down the password for the locker in my
-        // notebook" says where it is written. Neither holds a password. ("find my iphone password is x" does.)
+        val statement = Regex("\\b(?:password|passcode|pin|pin code)(?: (?:at|in|for) (?:my |the |our )?[a-z0-9'-]+(?: [a-z0-9'-]+)?)? (?:is|=) ").containsMatchIn(text) &&
+            !text.startsWith("change") && !Regex("\\bnew\\b").containsMatchIn(text)
+        // Capitals or digits as typed/heard ("On The Rocks", "on123") mean a real password, not a place.
+        val typed = originalCase(v, raw).let { o -> o.any(Char::isUpperCase) || o.any(Char::isDigit) }
+        // "the wifi password is written on the router", "... is on the fridge": where it is, not what it is.
+        if (!typed && Regex("^(?:(?:written|stuck|kept|saved|stored|pasted|taped|hidden|noted)(?: down| up)? (?:on|in|at|under|inside|behind|near|by|with|somewhere)|(?:on|in|at|under|inside|behind|near) (?:the|my|a|an|our|his|her|top|back)|somewhere)\\b").containsMatchIn(v)) return null
         if (Regex("^(?:to |about )").containsMatchIn(svc)) return null
-        if (!statement && Regex("\\b(?:change|update|reset|check|ask|send|get|find|tell|give|share|forgot|forget)\\b").containsMatchIn(svc)) return null
-        if (Regex("\\b(?:in|on|at|under|inside|behind|near|into)(?: my| the| a| our)?$|\\b(?:in|on|at|under|inside|behind|near|into) (?:my|the|a|our|his|her)\\b").containsMatchIn(svc)) return null
-        if (Regex("^(?:today|tomorrow|tonight|later|soon|now|again|yesterday|later today|next week|this week|morning|evening)$").matches(v)) return null
-        // "the wifi password is written on the router", "... stuck on the fridge": where it is, not what it is.
-        if (Regex("^(?:written|stuck|kept|saved|stored|pasted|taped|hidden|noted|somewhere|on|in|at|under|inside|behind|near|with|in the|on the)\\b").containsMatchIn(v)) return null
-        // "change the wifi password tomorrow morning", "... after 3 days": the value is a time, so this is a reminder.
-        if (v.contains(' ') || v.all(Char::isLetter)) TimeParser.parse(v, 0L, TimeZone.UTC)?.let { t ->
-            if (t.range.first == 0 && t.range.last >= v.length - 1) return null
+        if (!statement) {
+            // "remember to change the wifi password tomorrow" is a reminder; "write down the password for the locker in
+            // my notebook" says where it is written. Neither holds a password. ("find my iphone password is x" does.)
+            if (Regex("\\b(?:change|update|reset|check|ask|send|get|find|tell|give|share|forgot|forget)\\b").containsMatchIn(svc)) return null
+            if (Regex("\\b(?:in|on|at|under|inside|behind|near|into)(?: my| the| a| our)?$|\\b(?:in|on|at|under|inside|behind|near|into) (?:my|the|a|our|his|her)\\b").containsMatchIn(svc)) return null
+            if (Regex("^(?:today|tomorrow|tonight|later|soon|now|again|yesterday|later today|next week|this week|morning|evening)$").matches(v)) return null
+            // "change the wifi password tomorrow morning", "... after 3 days": the value is a time, so this is a reminder.
+            if (v.contains(' ') || v.all(Char::isLetter)) TimeParser.parse(v, 0L, TimeZone.UTC)?.let { t ->
+                if (t.range.first == 0 && t.range.last >= v.length - 1) return null
+            }
         }
         val shownService = restoreCase(svc, raw).replaceFirstChar { it.uppercase() }
         val body = if (statement) saveBody(raw) else "$shownService password is ${originalCase(v, raw)}"

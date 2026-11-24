@@ -114,6 +114,7 @@ object TimeParser {
             val adj = if (clk != null && clk.hour < 12 && !hasAmPm(text)) partOf(text)?.takeIf { it >= 12 }?.let { LocalTime(clk.hour + 12, clk.minute) } ?: clk
                 else if (clk != null && halfGuessed && clk.hour in 13..18 && !hasAmPm(text) && (partOf(text) ?: 12) < 12) LocalTime(clk.hour - 12, clk.minute)
                 else t
+            PART_ALONE.find(text)?.let { spans += it.range } // "after 3 days at 6 in the morning": the words belong to the time
             val other = if (clk != null && halfGuessed && partOf(text) == null) LocalDateTime(relDate!!, otherHalf(adj)).toInstant(tz) else null
             return TimeMatch(LocalDateTime(relDate!!, adj).toInstant(tz), null, spans.minOf { it.first }..spans.maxOf { it.last }, false, other)
         }

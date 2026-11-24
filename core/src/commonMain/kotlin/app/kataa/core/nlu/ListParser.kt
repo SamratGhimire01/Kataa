@@ -50,6 +50,8 @@ object ListParser {
         Triple(Regex("^(?:i am |i have |i )?(?:just )?done with (.+)$"), true, 1),
         Triple(Regex("^(?:i )?(?:just |already |have )*(?:finished|completed) (.+)$"), true, 2),
     )
+    private val TICK_TODAY = Regex("\\s+(?:for |on )?(?:today|now|already|too|as well|just now)$")
+    private val TICK_LIST_AFTER = Regex("^(.+?) ((?:as )?(?:done|complete|completed|finished|not done|undone|incomplete|not finished))( (?:on|in|from|of) (?:my |the |our )?(?:[a-z']+ ){0,2}?$TD)$")
     private val LIST_TAIL = Regex("\\s+(?:from|on|in|of) (?:my |the |our )?(.*?)\\b$TD\\b(.*)$")
 
     private val JOURNAL_START = listOf(
@@ -70,12 +72,16 @@ object ListParser {
     fun parse(text: String, raw: String, nowMs: Long, tz: TimeZone): Understanding? {
         val today = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date
         journal(text, raw, nowMs, tz, today)?.let { return it }
-        if (!TASKISH.containsMatchIn(text) && TICK.none { it.first.matches(text) } && !LEFT.matches(text)) return null
+        if (!TASKISH.containsMatchIn(text) && TICK.none { it.first.matches(text.replace(TICK_TODAY, "")) } && !LEFT.matches(text)) return null
 
         ADD.find(text)?.let { m ->
             // "write it on the list", "note my tasks in my list": no item named.
             val what = OWNER.replace(m.groupValues[1], "").trim()
-            if (what.isEmpty() || what in setOf("it", "this", "that", "them", "these", "those", "down", "something") || TD_WORD.containsMatchIn(what)) return@let
+            if (what in setOf("it", "this", "that", "them", "these", "those", "something")) {
+                // "note it on my shopping list": open that list and listen for what to add.
+                return Understanding.OpenList(keyFrom(m.groupValues[2], m.groupValues[3], today, nowMs, tz, m.groupValues[0]) ?: return null, listen = true)
+            }
+            if (what.isEmpty() || what == "down" || TD_WORD.containsMatchIn(what)) return@let
             val key = keyFrom(m.groupValues[2], m.groupValues[3], today, nowMs, tz, m.groupValues[0]) ?: return@let
             val items = app.kataa.core.lists.ListText.split(originalCase(m.groupValues[1], raw), nouns = key.startsWith("named:"))
             if (items.isNotEmpty()) return Understanding.AddToList(key, items)
@@ -84,8 +90,10 @@ object ListParser {
             return Understanding.RemoveFromList(keyFrom(m.groupValues[2], m.groupValues[3], today, nowMs, tz, m.groupValues[0]), m.groupValues[1])
         }
         question(text, today, nowMs, tz)?.let { return it }
+        // "mark eggs done on my shopping list" -> "mark eggs on my shopping list done"; "call didi is done today" -> "... is done".
+        val tickText = text.replace(TICK_TODAY, "").replace(TICK_LIST_AFTER) { m -> "${m.groupValues[1]}${m.groupValues[3]} ${m.groupValues[2]}" }
         for ((r, done, level) in TICK) {
-            val m = r.find(text) ?: continue
+            val m = r.find(tickText) ?: continue
             var query = m.groupValues[1].trim()
             var key: String? = null
             LIST_TAIL.find(query)?.let { t ->

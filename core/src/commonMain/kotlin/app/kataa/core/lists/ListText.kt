@@ -27,7 +27,7 @@ object ListText {
         if (ORDINAL_MARK.findAll(s).count() >= 2) s = s.replace(ORDINAL_MARK, "\n")
         s = s.replace(JOINER, "\n").replace(AND_TASK, "\n")
         if (nouns) s = s.replace(Regex("(?i)\\s+and\\s+"), "\n")
-        return s.split(Regex("[\\n;]+|,\\s+|\\.\\s+(?=[A-Za-z])"))
+        return s.split(Regex("[\\n;]+|,\\s+|,(?=[A-Za-z])|\\.\\s+(?=[A-Za-z])"))
             .map { it.trim().trimEnd('.', ',', ';').replace(LEAD, "").trim() }
             .filter { it.any(Char::isLetterOrDigit) }
     }
@@ -60,6 +60,9 @@ object ListText {
     }
 
     /** "number 2", "the second one", "2nd", "task three" -> 2/2/2/3. */
+    /** "the last one", "last task". */
+    fun isLast(query: String) = Regex("^(?:the |my )?(?:very )?last(?: (?:one|1|task|item|thing))?$").matches(Text.normalize(query))
+
     fun ordinal(query: String): Int? {
         val q = Text.normalize(query).replace(Regex("^(?:the |my )?(?:task |item |number |no |thing )?"), "")
             .replace(Regex("\\s+(?:one|1|task|item|thing)$"), "").trim()

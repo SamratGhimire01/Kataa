@@ -257,6 +257,35 @@ class ListsAndJournalTest {
         assertEquals("your didi birthday", assertIs<Reply.NotFound>(say("when is didi birthday")).askFor)
     }
 
+    /** Third bug-hunt pass. */
+    @Test fun reviewFindingsPass3() {
+        // 1: typed commas without a space.
+        assertEquals(listOf("Buy Milk", "Call Didi"), list(say("add Buy Milk,Call Didi to my to do list")).items.map { it.body })
+        say("add pay rent to my to do list")
+        say("add eggs and bread to my shopping list")
+        // 2: "done with" the milk / eggs means they ran out.
+        assertTrue(say("i'm done with the eggs") !is Reply.TaskListReply)
+        assertTrue(say("done with milk") !is Reply.TaskListReply)
+        // 3, 4, 5.
+        assertEquals("Pay rent", list(say("tick the last one")).items.single().body)
+        assertEquals("Eggs", list(say("mark eggs as done on my shopping list")).items.single().body)
+        assertEquals("Call Didi", list(say("call didi is done today")).items.single().body)
+        // 6: no reminder and no junk note.
+        assertIs<Reply.ListeningForList>(say("note it on my shopping list"))
+        // 7: the part of the day is not left in the reminder.
+        val r = assertIs<Reply.ReminderSet>(say("remind me after 3 days at 6 in the morning to pay rent"))
+        assertEquals("Pay rent", r.reminders.single().let { core.memories.get(it.memoryId)!!.body.trimEnd('.') })
+        // 8-10: real passwords.
+        for ((s, v) in listOf("my gmail password is sunday" to "sunday", "my wifi password is hidden dragon" to "hidden dragon",
+            "my office wifi password is On The Rocks" to "On The Rocks", "wifi password at home is blue sky 7" to "blue sky 7")) {
+            assertEquals(v, assertIs<Reply.ConfirmSecret>(say(s), s).value)
+        }
+        // 11: not "yours".
+        for (s in listOf("what is a dad joke", "when is the baby shower", "what is the boss meeting")) assertNull(assertIs<Reply.NotFound>(say(s), s).askFor, s)
+        // 13: a person is not a place.
+        assertTrue(say("get the wifi password from didi").let { it !is Reply.ReminderSet || it.reminders.none { r -> r.placeTarget != null } })
+    }
+
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
     @Test fun upgradesV2Journal() {
         val path = java.nio.file.Files.createTempDirectory("kataa").resolve("t.db").toString()
@@ -268,6 +297,18 @@ class ListsAndJournalTest {
         newCore(clock, path = path).use { c ->
             assertIs<Reply.JournalShown>(c.assistant.followUp(Reply.ListeningForJournal, "A calm day at home with tea", ctx()))
             assertEquals(1, c.journal.day(today).entries.size)
+            c.journal.setSummary(today, "AI summary", byAi = true)
+            c.db.execute("UPDATE journal_days SET entry_count = 0")
+            c.db.execute("PRAGMA user_version = 2")
+        }
+        // Upgrading keeps the AI's summary (the count is filled in, so nothing looks changed).
+        newCore(clock, path = path).use { c ->
+            c.db.execute("ALTER TABLE journal_days DROP COLUMN entry_count")
+            c.db.execute("PRAGMA user_version = 2")
+        }
+        newCore(clock, path = path).use { c ->
+            c.processPending()
+            assertEquals("AI summary", c.journal.day(today).summary)
         }
         newCore(clock, path = path).use { c -> assertEquals(1, c.journal.day(today).entries.size) }
     }

@@ -20,22 +20,25 @@ class LongDictation(private val engine: SpeechEngine, private val quietRounds: I
     private fun text() = parts.joinToString(" ") { it.trim() }.trim()
 
     private fun round(l: SpeechEngine.Listener) {
-        // A recognizer that fails instantly must not spin forever: stop after many rounds in a row that heard nothing.
-        // Rounds that hear speech never count, so a long dictation is never cut while the user is talking.
+        // A recognizer that fails instantly must not spin forever: stop after many rounds in a row that heard nothing
+        // and ended within a second. A real quiet round lasts seconds and never counts, nor does one with speech, so
+        // "tap to stop" is never ended by the app while the recognizer works.
         if (emptyRounds > MAX_EMPTY_ROUNDS) { finish(l); return }
+        val began = kotlin.time.TimeSource.Monotonic.markNow()
+        fun empty() { if (began.elapsedNow() < kotlin.time.Duration.parse("1s")) emptyRounds++ else emptyRounds = 0 }
         engine.start(object : SpeechEngine.Listener {
             override fun onLevel(level: Float) { if (!over) l.onLevel(level) }
             override fun onPartial(text: String) { if (!over) l.onPartial((parts + text).joinToString(" ").trim()) }
             override fun onFinal(text: String) {
                 if (over) return
-                if (text.isNotBlank()) { parts += text; quiet = 0; emptyRounds = 0 } else emptyRounds++
+                if (text.isNotBlank()) { parts += text; quiet = 0; emptyRounds = 0 } else empty()
                 if (stopping || STOP.containsMatchIn(text.trim())) finish(l)
                 else { l.onPartial(text()); round(l) }
             }
             override fun onError(error: SpeechError) {
                 if (over) return
                 when {
-                    error == SpeechError.NO_SPEECH -> { quiet++; emptyRounds++; if (stopping || quiet >= quietRounds) finish(l) else round(l) }
+                    error == SpeechError.NO_SPEECH -> { quiet++; empty(); if (stopping || quiet >= quietRounds) finish(l) else round(l) }
                     parts.isNotEmpty() -> finish(l)
                     else -> { over = true; l.onError(error) }
                 }

@@ -144,14 +144,15 @@ class TaskLists(private val db: SqlDriver, private val clock: TimeSource, privat
      */
     fun find(list: TaskList, query: String, wantDone: Boolean? = null, strict: Int = 0): ListItem? {
         // "I finished the eggs" about a shopping list means they ran out, not that they were bought.
-        if (strict >= 2 && list.key.startsWith("named:")) return null
+        if (strict >= 1 && list.key.startsWith("named:")) return null
         val pool = list.items.filter { wantDone == null || it.done == wantDone }.ifEmpty { return null }
+        if (ListText.isLast(query)) return list.items.lastOrNull()?.takeIf { it in pool }
         ListText.ordinal(query)?.let { n -> return list.items.getOrNull(n - 1)?.takeIf { it in pool } }
         val q = ListText.words(query)
         if (q.isEmpty()) return null
         // [strict]: the sentence could be ordinary ("I finished the book"), so the item must be named too: mostly (1,
         // "book" alone is not "Book bus ticket") or wholly (2, "the rice is done" is not "Buy rice").
-        val need = when (strict) { 0 -> 0.0; 1 -> 0.5; else -> 1.0 }
+        val need = when (strict) { 0 -> 0.0; 1 -> 0.6; else -> 1.0 }
         return pool.map { it to ListText.overlap(q, ListText.words(it.body)) }
             .filter { (item, s) -> s >= 0.5 && ListText.overlap(ListText.words(item.body), q) >= need }
             .maxByOrNull { (_, s) -> s }?.first

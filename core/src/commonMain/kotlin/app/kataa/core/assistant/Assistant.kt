@@ -26,6 +26,7 @@ import app.kataa.core.nlu.ObjectLocation
 import app.kataa.core.nlu.PlaceParser
 import app.kataa.core.nlu.PlaceRef
 import app.kataa.core.nlu.QuestionType
+import app.kataa.core.nlu.Relations
 import app.kataa.core.nlu.Text
 import app.kataa.core.nlu.TimeParser
 import app.kataa.core.nlu.Understanding
@@ -511,7 +512,7 @@ class Assistant(private val core: KataaCore) {
         if (thing.isEmpty() || thing.split(' ').size > 5 || ASKABLE_SKIP.containsMatchIn(thing)) return Reply.NotFound(u.query)
         // Only something of yours ("my mom's birthday", "dad's phone number"), not "what happened at the meeting".
         // Recognizers often drop the "'s" ("when is didi birthday"), so a family word counts as yours too.
-        val ownMarker = Regex("(?:^| )(?:my|our) |'s ").containsMatchIn(u.query + " ") || RELATION.containsMatchIn(thing)
+        val ownMarker = Regex("(?:^| )(?:my|our) |'s ").containsMatchIn(u.query + " ") || Relations.PERSONAL_FACT.matches(thing)
         if (!ownMarker) return Reply.NotFound(u.query)
         val yours = thing.replace(Regex("^(?:my|our)\\s+"), "your ").let { if (it.startsWith("your ")) it else "your $it" }
         return Reply.NotFound(u.query, yours, isWhen = m.groupValues[1] == "when")
@@ -946,7 +947,6 @@ class Assistant(private val core: KataaCore) {
         private val PICK_SECOND = Regex("^(?:the )?(?:second|2nd|other|last)(?: (?:one|1))?$")
         private val QUESTION_WORD = Regex("^(?:what|where|when|who|whom|which|how|why|did|do|does|is|are|can|could|show|find|tell|give|search)\\b")
         private val ASKABLE = Regex("^(what|when|which)(?: is| are| was|s)? (?:my |our |the )?(.+?)$")
-        private val RELATION = Regex("\\b(?:mom|mum|mother|mommy|mummy|dad|father|daddy|papa|mamu|mama|aama|baba|buwa|didi|dai|daju|bahini|bhai|sister|brother|wife|husband|son|daughter|uncle|aunt|aunty|auntie|grandma|grandpa|grandmother|grandfather|hajurba|hajuraama|boss|wife's|girlfriend|boyfriend|partner|cousin|nephew|niece|friend|best friend|kid|kids|baby|fiance|fiancee)\\b")
         private val ASKABLE_SKIP = Regex("\\b(?:time|today|tomorrow|weather|date today|day today|reminders?|tasks?|plans?)\\b|^(?:i |it |that |this |did |do |does |have |had |was |were |am |are )")
         private val YEARLY_THING = Regex("\\b(?:birthday|bday|anniversary|death anniversary|wedding day)\\b")
         private val REMIND_WORD = Regex("\\bremind\\b")
