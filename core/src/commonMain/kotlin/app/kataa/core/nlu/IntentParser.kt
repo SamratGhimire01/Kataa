@@ -13,7 +13,8 @@ data class Secret(val service: String, val value: String, val kind: String = "pa
     companion object {
         fun nameOf(service: String, kind: String): String {
             val k = if (kind.startsWith("pin")) "PIN" else kind
-            return if (service.isBlank()) k.replaceFirstChar { it.uppercase() } else "${service.replaceFirstChar { it.uppercase() }} $k"
+            val svc = service.trim().let { if (it.lowercase() in setOf("atm", "sim", "upi")) it.uppercase() else it.replaceFirstChar { c -> c.uppercase() } }
+            return if (svc.isEmpty()) k.replaceFirstChar { it.uppercase() } else "$svc $k"
         }
     }
 }

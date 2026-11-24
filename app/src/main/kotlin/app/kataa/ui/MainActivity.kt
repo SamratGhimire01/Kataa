@@ -679,7 +679,7 @@ class MainActivity : ComponentActivity() {
             copyLabel.text = "Copy password"
             saveIt.visibility = View.VISIBLE; saveIt.alpha = 0f
             saveIt.animate().alpha(1f).setStartDelay(700).setDuration(500).start()
-            saveAction = { copySecret(Secrets.service(memory.body) ?: "Password", secret) }
+            saveAction = { copySecret(Secrets.name(memory.body) ?: "Password", secret) }
         }
         app.cores.worker.execute {
             val slugs = runCatching { app.cores.core.categories.assignmentsFor(memory.id).map { it.slug } }.getOrDefault(emptyList())
@@ -966,7 +966,7 @@ class MainActivity : ComponentActivity() {
         val b = dialog().setTitle(m.body)
             .setMessage("Saved ${relative(m.createdAt)}")
             .setPositiveButton("Edit") { _, _ -> editMemory(m) }
-        if (secret != null) b.setNeutralButton("Copy") { _, _ -> copySecret(Secrets.service(m.body) ?: "Password", secret) }
+        if (secret != null) b.setNeutralButton("Copy") { _, _ -> copySecret(Secrets.name(m.body) ?: "Password", secret) }
         b.setNegativeButton("Delete") { _, _ ->
                 app.cores.worker.execute { runCatching { app.cores.core.memories.trash(m.id); app.cores.core.reminders.forMemory(m.id).forEach { app.cores.core.reminders.cancel(it.id) } }
                     runCatching { Triggers.refreshAll(this) }
@@ -981,16 +981,18 @@ class MainActivity : ComponentActivity() {
         val body = EditText(this).apply { setText(secretValue ?: m.body); hint = if (secretValue != null) "Password" else "Memory" }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(ui.dpi(22f), ui.dpi(8f), ui.dpi(22f), 0)
-            if (secretValue != null) { addView(ui.text(13f, 600, look.dim).apply { text = "For" }); addView(service); addView(ui.text(13f, 600, look.dim).apply { text = "Password"; setPadding(0, ui.dpi(10f), 0, 0) }) }
+            if (secretValue != null) { addView(ui.text(13f, 600, look.dim).apply { text = "For" }); addView(service); addView(ui.text(13f, 600, look.dim).apply { text = if (Secrets.kind(m.body) == "pin") "PIN" else "Password"; setPadding(0, ui.dpi(10f), 0, 0) }) }
             addView(body)
         }
         dialog().setTitle("Edit").setView(box)
             .setPositiveButton("Save") { _, _ ->
-                val text = if (secretValue != null) "${service.text.toString().trim().ifEmpty { "My" }} password is ${body.text.toString().trim()}" else body.text.toString().trim()
+                // A password stays a password and a PIN a PIN ("Bank PIN is 1235", subject "bank pin").
+                val composed = secretValue?.let { Secrets.compose(service.text.toString(), Secrets.kind(m.body), body.text.toString()) }
+                val text = composed?.first ?: body.text.toString().trim()
                 if (text.isEmpty()) return@setPositiveButton
                 app.cores.worker.execute {
                     // A password's subject follows its service, so "change my gmail password" later finds this one.
-                    val subject = if (secretValue != null) service.text.toString().trim().takeIf { it.isNotEmpty() }?.let { Text.subjectKey("$it password") } else null
+                    val subject = composed?.second
                     runCatching { app.cores.core.memories.update(m.id, MemoryEdit(body = text, subject = subject)); app.cores.core.processPending() }
                     runOnUiThread { Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show(); when (scene) { Scene.MEMORIES -> openMemories(); Scene.TIMELINE -> openTimeline(); else -> Unit } }
                 }

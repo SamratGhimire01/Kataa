@@ -723,10 +723,31 @@ class ListsAndJournalTest {
         // 7, 8: stored digits and spoken names.
         val atm = confirm("my atm pin is one two three four")
         assertEquals("My atm pin is 1234", assertIs<Reply.Saved>(atm).memory.body)
-        assertEquals("Here's your atm PIN. It's on the screen.", ReplyText.spoken(core.assistant.handle("what is my atm pin", ctx())))
+        assertEquals("Here's your ATM PIN. It's on the screen.", ReplyText.spoken(core.assistant.handle("what is my atm pin", ctx())))
         // 9, 10: "hi there" before a request, "one and half hours".
         assertEquals("Call mom", set(say("hi there remind me to call mom at 5 pm")).memory.body.trimEnd('.'))
         assertEquals("2026-11-24T09:30", local(set(say("remind me in one and half hours to call mom")).reminders.single().fireAt!!))
+    }
+
+    @Test fun reviewFindingsPass16() {
+        fun card(s: String = "my wifi password is sunflower77") = assertIs<Reply.ConfirmSecret>(say(s), s)
+        // 1: "yes its correct" is a yes.
+        for ((i, yes) in listOf("yes its correct", "its right", "its fine").withIndex())
+            assertEquals("My wifi password is sunflower1$i", core.assistant.followUp(card("my wifi password is sunflower1$i"), yes, ctx()).let { (it as? Reply.Saved)?.memory?.body ?: (it as? Reply.Replaced)?.memory?.body }, yes)
+        // 2: a real request on the card is handled.
+        assertTrue(core.assistant.followUp(card(), "find my keys", ctx()) !is Reply.ConfirmSecret)
+        // 3, 4: every way of saying no.
+        for (no in listOf("no don't save it", "no do not save it", "no thanks", "not now", "skip", "leave it"))
+            assertEquals(Reply.NotSaved, core.assistant.followUp(card("my office password is abc12"), no, ctx()), no)
+        // 5: editing keeps the kind.
+        assertEquals("Bank PIN is 9999" to "bank pin", app.kataa.core.memory.Secrets.compose("Bank", app.kataa.core.memory.Secrets.kind("Bank PIN is 1235"), "9999"))
+        assertEquals("My password is x1" to "password", app.kataa.core.memory.Secrets.compose("", app.kataa.core.memory.Secrets.kind("My password is sunflower12"), "x1"))
+        // 6: "my pin for the bank is 1234".
+        val body = "My pin for the bank is 1234"
+        assertEquals("1234", app.kataa.core.memory.Secrets.value(body)); assertEquals("Bank PIN", app.kataa.core.memory.Secrets.name(body))
+        assertEquals("My pin for the bank is ••••••", app.kataa.core.memory.Secrets.masked(body))
+        // 7: "hey there's a parcel" is not a question.
+        assertTrue(say("hey there's a parcel coming tomorrow") !is Reply.NotFound)
     }
 
     /** 16: a database made by an earlier v2 build (journal_days without entry_count) is upgraded, and the journal works. */
