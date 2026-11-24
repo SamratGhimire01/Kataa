@@ -44,6 +44,7 @@ import app.kataa.core.assistant.ReplyText
 import app.kataa.places.MapActivity
 import app.kataa.core.lists.ListItem
 import app.kataa.core.lists.ListKey
+import app.kataa.core.nlu.Text
 import app.kataa.core.memory.Secrets
 import app.kataa.core.model.MemoryEdit
 import app.kataa.core.model.Category
@@ -577,7 +578,8 @@ class MainActivity : ComponentActivity() {
             is Reply.Corrected -> done("Fixed", shown(r.after))
             is Reply.Undone -> done("Deleted", shown(r.memory))
             is Reply.CategoryCreated -> done("Added", "New group: ${r.category.name}")
-            is Reply.CategoryList -> { session.dismiss(); openCategory(r.category) }
+            // The vault ("show me all my passwords") lists every secret, also ones filed elsewhere or not yet filed.
+            is Reply.CategoryList -> { session.dismiss(); openCategory(r.category, r.memories.takeIf { r.category.isPrivate }) }
             is Reply.NeedsUnlock -> {
                 showMessage("That's in Private. Unlock to see it.")
                 val km = getSystemService(KeyguardManager::class.java)
@@ -762,6 +764,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The memory store could not open (a damaged file, the phone full): say so instead of an empty screen. */
+    private fun loadFailed(e: Throwable) {
+        Toast.makeText(this, "Couldn't open your memories: ${e.message ?: e.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+    }
+
     private fun whenText(r: Reminder): String {
         val c = app.cores.core
         return when (r.type) {
@@ -836,7 +843,7 @@ class MainActivity : ComponentActivity() {
         list.addView(recent)
 
         app.cores.worker.execute {
-            val c = app.cores.core
+            val c = runCatching { app.cores.core }.getOrElse { e -> runOnUiThread { loadFailed(e) }; return@execute }
             val cats = runCatching { c.categories.list().filter { it.memoryCount > 0 }.sortedByDescending { it.memoryCount } }.getOrDefault(emptyList())
             val journalIds = runCatching { c.memories.recent(30).filter { c.journal.isJournal(it.id) }.map { it.id }.toSet() }.getOrDefault(emptySet())
             val mem = runCatching { c.memories.recent(30).filter { it.id !in journalIds } }.getOrDefault(emptyList())
@@ -963,14 +970,16 @@ class MainActivity : ComponentActivity() {
                 val text = if (secretValue != null) "${service.text.toString().trim().ifEmpty { "My" }} password is ${body.text.toString().trim()}" else body.text.toString().trim()
                 if (text.isEmpty()) return@setPositiveButton
                 app.cores.worker.execute {
-                    runCatching { app.cores.core.memories.update(m.id, MemoryEdit(body = text)); app.cores.core.processPending() }
+                    // A password's subject follows its service, so "change my gmail password" later finds this one.
+                    val subject = if (secretValue != null) service.text.toString().trim().takeIf { it.isNotEmpty() }?.let { Text.subjectKey("$it password") } else null
+                    runCatching { app.cores.core.memories.update(m.id, MemoryEdit(body = text, subject = subject)); app.cores.core.processPending() }
                     runOnUiThread { Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show(); when (scene) { Scene.MEMORIES -> openMemories(); Scene.TIMELINE -> openTimeline(); else -> Unit } }
                 }
             }
             .setNegativeButton("Cancel", null).show()
     }
 
-    private fun openCategory(cat: Category) {
+    private fun openCategory(cat: Category, given: List<Memory>? = null) {
         startList(Scene.CATEGORY, cat.name, "${cat.memoryCount}", back = { openMemories() })
         val big = ImageView(this).apply { setImageResource(ObjectIcons.forCategory(cat.slug)); alpha = 0f; translationY = -ui.dp(24f)
             animate().alpha(1f).translationY(0f).setStartDelay(200).setDuration(900).setInterpolator(Motion.spring).start() }
@@ -978,16 +987,18 @@ class MainActivity : ComponentActivity() {
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         list.addView(rows)
         app.cores.worker.execute {
-            val mem = runCatching { app.cores.core.categories.memoriesIn(cat.id, 100) }.getOrDefault(emptyList())
+            val mem = given ?: runCatching { app.cores.core.categories.memoriesIn(cat.id, 100) }.getOrDefault(emptyList())
+            // A password can be filed in an ordinary group too ("Money"): it stays masked until unlock.
+            val priv = runCatching { app.cores.core.memories.privateIds(mem.map { it.id }) }.getOrDefault(emptySet())
             runOnUiThread {
                 if (scene != Scene.CATEGORY) return@runOnUiThread
                 if (cat.isPrivate && !app.privateUnlocked) {
                     rows.addView(emptyState("Private", "Your passwords and secrets. Unlock to see them."))
-                    rows.addView(settingsRow("Unlock", "Fingerprint, face or PIN") { withUnlock { openCategory(cat) } })
+                    rows.addView(settingsRow("Unlock", "Fingerprint, face or PIN") { withUnlock { openCategory(cat, given) } })
                     mem.forEachIndexed { i, m -> rows.addView(memoryRow(m, i, locked = true)) }
                     return@runOnUiThread
                 }
-                mem.forEachIndexed { i, m -> rows.addView(memoryRow(m, i)) }
+                mem.forEachIndexed { i, m -> rows.addView(memoryRow(m, i, locked = m.id in priv && !app.privateUnlocked)) }
             }
         }
     }
@@ -998,7 +1009,7 @@ class MainActivity : ComponentActivity() {
         val lists = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         list.addView(lists)
         app.cores.worker.execute {
-            val c = app.cores.core
+            val c = runCatching { app.cores.core }.getOrElse { e -> runOnUiThread { loadFailed(e) }; return@execute }
             val today = kDate(java.time.LocalDate.now())
             val keys = (listOf(ListKey.day(today), ListKey.day(kDate(java.time.LocalDate.now().plusDays(1))),
                 ListKey.month(today.year, today.month.ordinal + 1)) + runCatching { c.lists.keys() }.getOrDefault(emptyList())).distinct()
@@ -1019,7 +1030,7 @@ class MainActivity : ComponentActivity() {
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         list.addView(rows)
         app.cores.worker.execute {
-            val c = app.cores.core
+            val c = runCatching { app.cores.core }.getOrElse { e -> runOnUiThread { loadFailed(e) }; return@execute }
             val items = runCatching {
                 val tz = java.time.ZoneId.systemDefault()
                 val range = when (day) {
@@ -1261,7 +1272,10 @@ class MainActivity : ComponentActivity() {
                 { _, y, m, d ->
                     openDialog = null
                     val month = java.text.DateFormatSymbols(java.util.Locale.ENGLISH).months[m]
-                    session.type("$d $month $y")
+                    // Birthdays and anniversaries come every year: the wheel's own year (left as this year) is not
+                    // part of the fact. A year the user scrolled to (a birth year) is kept.
+                    val yearly = Regex("(?i)birthday|bday|anniversary").containsMatchIn(r.askFor!!)
+                    session.type(if (yearly && y == now.get(Calendar.YEAR)) "$d $month" else "$d $month $y")
                 }, now.get(Calendar.YEAR), now.get(Calendar.MONTH), now.get(Calendar.DAY_OF_MONTH))
             wheel.setTitle(r.askFor!!.replaceFirstChar { it.uppercase() })
             wheel.setButton(android.content.DialogInterface.BUTTON_NEUTRAL, "Say it") { _, _ -> openDialog = null; startTalking() }
@@ -1421,7 +1435,7 @@ class MainActivity : ComponentActivity() {
         list.addView(body)
         list.addView(settingsRow("Write in today's journal", "Tap, then talk about your day. Pauses are fine; say \"that's it\" to finish.") { session.type("today's journal") })
         app.cores.worker.execute {
-            val c = app.cores.core
+            val c = runCatching { app.cores.core }.getOrElse { e -> runOnUiThread { loadFailed(e) }; return@execute }
             val j = runCatching { c.journal.day(day) }.getOrNull()
             val tz = java.time.ZoneId.systemDefault()
             val from = jDate(day).atStartOfDay(tz).toInstant().toEpochMilli()
@@ -1477,10 +1491,11 @@ class MainActivity : ComponentActivity() {
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         list.addView(rows)
         app.cores.worker.execute {
-            val c = app.cores.core
+            val c = runCatching { app.cores.core }.getOrElse { e -> runOnUiThread { loadFailed(e) }; return@execute }
             val tz = java.time.ZoneId.systemDefault()
             val endMs = until?.let { jDate(it).plusDays(1).atStartOfDay(tz).toInstant().toEpochMilli() } ?: Long.MAX_VALUE
-            val mem = runCatching { c.memories.recent(400).filter { it.createdAt < endMs } }.getOrDefault(emptyList())
+            val mem = runCatching { c.memories.before(endMs, 200) }.getOrDefault(emptyList())
+            val listDays = runCatching { c.lists.keys().mapNotNull { ListKey.dayOf(it) }.toSet() }.getOrDefault(emptySet())
             val priv = runCatching { c.memories.privateIds(mem.map { it.id }) }.getOrDefault(emptySet())
             val journalIds = mem.filter { runCatching { c.journal.isJournal(it.id) }.getOrDefault(false) }.map { it.id }.toSet()
             val byDay = mem.take(200).groupBy { java.time.Instant.ofEpochMilli(it.createdAt).atZone(tz).toLocalDate() }
@@ -1491,6 +1506,7 @@ class MainActivity : ComponentActivity() {
                 for ((d, ms) in byDay) {
                     rows.addView(sectionLabel(java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", java.util.Locale.ENGLISH).format(d)))
                     if (ms.any { it.id in journalIds }) rows.addView(settingsRow("Journal", "Open this day's journal") { openJournal(kDate(d)) })
+                    if (kDate(d) in listDays) rows.addView(settingsRow("To-do list", "Open this day's list") { openList(ListKey.day(kDate(d))) })
                     ms.filter { it.id !in journalIds }.forEach { m -> rows.addView(memoryRow(m, i++, locked = m.id in priv && !app.privateUnlocked)) }
                 }
             }

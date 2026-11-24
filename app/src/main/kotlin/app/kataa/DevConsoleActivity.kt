@@ -164,11 +164,12 @@ class DevConsoleActivity : Activity() {
             KataaState.Idle -> "Ready"
             is KataaState.Listening -> "Listening " + "▮".repeat((s.level * 10).toInt()) + "\n" + s.partial
             is KataaState.Thinking -> "…"
-            is KataaState.Done -> ReplyText.of(s.reply)
+            is KataaState.Done -> ReplyText.spoken(s.reply)
             is KataaState.Failed -> "Mic problem: ${s.error}. You can type instead."
         }
         if (s is KataaState.Done) {
-            val text = ReplyText.of(s.reply)
+            // Masked: this screen shows and speaks, and must never reveal a password.
+            val text = ReplyText.spoken(s.reply)
             log.append("\n> ${s.heard}\n$text\n  ${s.reply::class.simpleName}\n")
             speaker.say(text)
         }

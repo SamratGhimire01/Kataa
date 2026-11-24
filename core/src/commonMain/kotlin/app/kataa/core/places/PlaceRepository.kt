@@ -92,7 +92,7 @@ class PlaceRepository(private val db: SqlDriver, private val clock: TimeSource) 
     fun get(id: Long): Place? = db.queryOne("SELECT $COLS FROM places WHERE id = ?", id, map = ::mapPlace)
 
     fun findByLabel(label: String): List<Place> =
-        db.query("SELECT $COLS FROM places WHERE label = ? ORDER BY origin = 'USER' DESC, id", label.trim(), map = ::mapPlace)
+        db.query("SELECT $COLS FROM places WHERE label = ? COLLATE NOCASE ORDER BY origin = 'USER' DESC, id", label.trim(), map = ::mapPlace)
 
     fun userPlaces(): List<Place> =
         db.query("SELECT $COLS FROM places WHERE origin <> 'POI_PACK' ORDER BY label", map = ::mapPlace)

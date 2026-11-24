@@ -69,6 +69,13 @@ class MemoryRepository(
             after?.id, after?.createdAt, after?.id, limit, map = ::mapMemory,
         )
 
+    /** Newest first, made before [beforeMs]: the timeline from a chosen date back. */
+    fun before(beforeMs: Long, limit: Int = 200): List<Memory> =
+        db.query(
+            "SELECT $COLUMNS FROM memories WHERE deleted_at IS NULL AND created_at < ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            beforeMs, limit, map = ::mapMemory,
+        )
+
     fun update(id: Long, edit: MemoryEdit): Memory = db.transaction {
         val current = get(id) ?: throw NoSuchElementException("memory $id")
         val newSubject = when {

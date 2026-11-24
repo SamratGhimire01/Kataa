@@ -150,6 +150,14 @@ class CaptureActivity : ComponentActivity() {
             })
             return
         }
+        if (needsMainScreen(s.reply)) {
+            // Listening for an idea, a list or the journal, "AM or PM?", "Save this password?", "Pin on map":
+            // those need the full screen. It shows this same reply (the session is shared) with its card.
+            handedOff = true
+            startActivity(Intent(this, app.kataa.ui.MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
+            finish()
+            return
+        }
         val text = ReplyText.of(s.reply)
         val word = when (s.reply) {
             is Reply.Saved -> "Saved"
@@ -170,13 +178,24 @@ class CaptureActivity : ComponentActivity() {
             nebula.setState(NebulaView.State.IDLE)
             say(text)
         }
-        if (Look.speakReplies(this)) speaker.say(text)
+        // Never ReplyText.of here: spoken text must not contain a password.
+        if (Look.speakReplies(this)) speaker.say(ReplyText.spoken(s.reply))
         // Leave the result up long enough to read, then slide away.
         closer = scope.launch {
             delay(if (word != null) 2600L else 1800L + text.length * 45L)
             session.dismiss()
             sheet.animate().translationY(sheet.height + ui.dp(40f)).setDuration(380).setInterpolator(Motion.exit).withEndAction { finish() }.start()
         }
+    }
+
+    private var handedOff = false
+
+    private fun needsMainScreen(r: Reply): Boolean = when (r) {
+        Reply.ListeningForIdea, is Reply.ListeningForList, Reply.ListeningForJournal, is Reply.PickTime, is Reply.ConfirmSecret,
+        is Reply.NeedsPlace -> true
+        is Reply.NotFound -> r.askFor != null
+        is Reply.Several -> r.replies.any(::needsMainScreen)
+        else -> false
     }
 
     private fun locked() = getSystemService(KeyguardManager::class.java).isKeyguardLocked
@@ -186,7 +205,7 @@ class CaptureActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (!isChangingConfigurations && !inVoiceTyping) { session.cancel(); finish() }
+        if (!isChangingConfigurations && !inVoiceTyping && !handedOff) { session.cancel(); finish() }
     }
 
     override fun onDestroy() {

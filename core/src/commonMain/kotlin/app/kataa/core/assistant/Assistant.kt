@@ -797,7 +797,12 @@ class Assistant(private val core: KataaCore) {
             val p = core.places.save("Saved spot", loc.lat, loc.lng)
             Resolved.Target(PlaceTarget.Specific(p.id), "this spot")
         } ?: Resolved.NoLocation
-        is PlaceRef.Kind -> Resolved.Target(PlaceTarget.Type(ref.placeType), "any ${Text.stripDeterminers(ref.spoken)}")
+        // A place the user pinned and named ("Gym") beats the kind of place ("any gym").
+        is PlaceRef.Kind -> Text.stripDeterminers(ref.spoken).let { name ->
+            core.places.findByLabel(name).firstOrNull { it.origin != app.kataa.core.model.PlaceOrigin.POI_PACK && it.brand == null }
+                ?.let { Resolved.Target(PlaceTarget.Specific(it.id), name) }
+                ?: Resolved.Target(PlaceTarget.Type(ref.placeType), "any $name")
+        }
         is PlaceRef.Named -> {
             val name = Text.stripDeterminers(ref.name)
             val saved = core.places.findByLabel(name).firstOrNull { it.origin != app.kataa.core.model.PlaceOrigin.POI_PACK }

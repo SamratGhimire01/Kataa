@@ -81,7 +81,7 @@ class MapActivity : ComponentActivity() {
         radiusText = ui.text(14f, 600)
         val radii = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            for (r in listOf(50, 100, 200, 500)) addView(ui.text(14f, 700, look.fg, Gravity.CENTER).apply {
+            for (r in listOf(100, 200, 500, 1000)) addView(ui.text(14f, 700, look.fg, Gravity.CENTER).apply {
                 text = "$r m"; background = ui.glass(); setPadding(ui.dpi(14f), ui.dpi(8f), ui.dpi(14f), ui.dpi(8f))
                 setOnClickListener { map.pinRadiusM = r.toDouble(); updateCoords() }
             }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dpi(8f) })

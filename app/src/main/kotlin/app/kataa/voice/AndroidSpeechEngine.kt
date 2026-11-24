@@ -185,7 +185,7 @@ class AndroidSpeechEngine private constructor(private val context: Context, priv
             if (guesses.isEmpty()) return ""
             fun score(g: String) = g.lowercase().split(Regex("[^a-z']+")).count { it in LIKELY }
             val top = guesses.first()
-            val alt = guesses.drop(1).take(3).filter { it.split(' ').size == top.split(' ').size }.maxByOrNull(::score)
+            val alt = guesses.drop(1).take(4).filter { it.split(' ').size == top.split(' ').size }.maxByOrNull(::score)
             return if (alt != null && score(alt) > score(top)) alt else top
         }
 
